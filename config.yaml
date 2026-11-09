@@ -1,8 +1,10 @@
 # ================= 时间与窗口 =================
 timezone: Asia/Shanghai
-# 每天推送时间（本地时区）。改了这里，记得同步改 .github/workflows/daily.yml 的 cron
-push_time: "08:30"
-# 统计窗口 = 昨天 08:30 → 今天 08:30（本地时区）
+# 计划任务的 cron 在 .github/workflows/daily.yml（UTC 00:05 = 北京 08:05）。
+# 定时任务用 --now 运行，统计窗口 = 最近 24h（截止到实际触发时刻），
+# 这样 Actions 的 5~20 分钟触发延迟不会造成漏采；重复条目靠 state.json 去重。
+# 下面的 push_time 只影响「手动运行且不带 --now」时的窗口锚点。
+push_time: "08:05"
 
 # ================= LLM =================
 llm:
@@ -35,8 +37,10 @@ collectors:
     window_hours: 24
     per_page: 30
     min_stars: 10
-    # 是否额外抓「近 24h 活跃的老仓库」（会明显增加条目，默认关闭）
-    include_active: false
+    # 额外抓「近 24h 有推送的成熟仓库」：这些才值得读源码/直接复用；
+    # 只抓 created:>=昨天 会全是几十 star 的空仓库。
+    include_active: true
+    active_min_stars: 200    # 成熟仓库的 star 门槛
     topics:
       - topic:llm
       - topic:ai-agents
@@ -44,10 +48,18 @@ collectors:
       - topic:rag
       - topic:mcp
       - topic:llm-inference
+      # Java 后端的 Agent 技术栈，和读者背景直接相关
+      - topic:spring-ai
+      - topic:langchain4j
 
   huggingface:
     enabled: true
-    window_hours: 72        # 新模型上架到被发现通常有延迟
+    window_hours: 72        # 兜底窗口（下面两项未配置时才用它）
+    # 模型榜是「近期热门」而不是「刚发布」，createdAt 往往在几周前；
+    # 72h 只会剩下个位数候选，本地模型板块几乎必然为空
+    models_window_hours: 336   # 14 天
+    # HF daily papers 周末会停更，且公告有延迟；168h 能覆盖一个完整周末
+    papers_window_hours: 168   # 7 天
     models_limit: 60        # 拉取候选数量
     detail_limit: 15        # 拉取模型详情的数量（用于取参数/许可证）
     readme_limit: 8         # 拉取 README 的数量（显存/速度信息来源）
@@ -76,8 +88,10 @@ collectors:
       - { name: Google DeepMind,  url: "https://deepmind.google/blog/rss.xml" }
       - { name: HuggingFace Blog, url: "https://huggingface.co/blog/feed.xml" }
       - { name: Simon Willison,   url: "https://simonwillison.net/atom/everything/" }
-      - { name: LangChain,        url: "https://blog.langchain.dev/rss/" }
-      - { name: 机器之心,          url: "https://www.jiqizhixin.com/rss" }
+      # 旧地址 blog.langchain.dev/rss/ 已 301 到博客 HTML，feedparser 会解析出 0 条
+      - { name: LangChain,        url: "https://www.langchain.com/blog/rss.xml" }
+      # 机器之心 RSS 已改为跳转到 data-service 页面，暂无可用 feed，先移除。
+      # 想恢复时换成可用的 RSS 地址再加回来。
       - { name: 量子位,            url: "https://www.qbitai.com/feed" }
 
   reddit:
@@ -96,6 +110,18 @@ prefilter:
   min_relevance: 1         # 关键词命中数下限
   # 只对这几类做关键词过滤；其余（GitHub / RSS / arXiv 等垂类源）默认都相关
   filter_sources: [hackernews, hf_model, reddit]
+  # GitHub 候选混合排序，避免名额全被大厂项目占满：
+  #   成熟项目（建仓 ≥180 天，按 star）
+  #   高成长新仓库（建仓 ≤90 天，按 star/天）
+  #   读者的技术栈（language: Java，按 star）
+  # 某一类不足时自动用剩余条目按 star 补满到 max_per_source
+  github_mix:
+    mature: 12
+    growth: 8
+    java: 5
+    mature_min_age_days: 180
+    growth_min_age_days: 7    # 太新的仓库多半是实验品，放几天再看成长性
+    growth_max_age_days: 90
 
 # ================= 关键词 =================
 # 用于本地规则粗筛 + dry-run 时的大致分类

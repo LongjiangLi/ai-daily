@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from collections import defaultdict
 from typing import Any
@@ -57,10 +58,11 @@ async def score_articles(
     """
     system = load_prompt("score")
     scores: dict[str, dict] = {}
-    batch_size = 40
+    # 40 条 × 每条约 100 token 输出，容易顶到 max_tokens 被截断；30 条更稳
+    batch_size = 30
+    chunks = [articles[i : i + batch_size] for i in range(0, len(articles), batch_size)]
 
-    for i in range(0, len(articles), batch_size):
-        chunk = articles[i : i + batch_size]
+    async def score_chunk(idx: int, chunk: list[Article]) -> None:
         payload = {
             "items": [
                 {
@@ -74,11 +76,15 @@ async def score_articles(
             ]
         }
         data = await llm.json_call(system, _dumps(payload))
+        got = 0
         for item in data.get("scores", []):
             if isinstance(item, dict) and item.get("id"):
                 scores[item["id"]] = item
-        print(f"    打分进度 {min(i + batch_size, len(articles))}/{len(articles)}")
+                got += 1
+        print(f"    打分进度 {idx}/{len(chunks)} 批（{got} 条）", flush=True)
 
+    # 批次之间互不依赖，并发跑；串行时 90 条要白等三次往返
+    await asyncio.gather(*[score_chunk(i, c) for i, c in enumerate(chunks, 1)])
     return scores
 
 
@@ -212,7 +218,7 @@ async def synthesize(
     if not brief:
         return {"headline": [], "signals": []}
 
-    data = await llm.json_call(load_prompt("summary"), _dumps(brief), max_tokens=1200)
+    data = await llm.json_call(load_prompt("summary"), _dumps(brief), max_tokens=2000)
     return {
         "headline": [str(x) for x in _as_list(data.get("headline"))][:3],
         "signals": _as_list(data.get("signals"))[:3],

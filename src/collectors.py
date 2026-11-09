@@ -81,14 +81,22 @@ async def collect_github(cfg: dict, client: httpx.AsyncClient, start: datetime) 
     since = start.astimezone(timezone.utc).strftime("%Y-%m-%d")
     per_page = int(cfg.get("per_page", 30))
     min_stars = int(cfg.get("min_stars", 0))
+    active_min_stars = int(cfg.get("active_min_stars", 200))
     topics: list[str] = cfg.get("topics", [])
 
-    queries: list[str] = [f'{t} created:>={since}' for t in topics]
+    # fork / archived 一律排除：占位置且几乎没有参考价值
+    queries: list[str] = [f'{t} created:>={since} fork:false archived:false' for t in topics]
     if cfg.get("include_active"):
-        queries += [f'{t} stars:>=200 pushed:>={since}' for t in topics]
+        # 成熟仓库的「近期活跃」信号，比刚创建的空仓库更值得读
+        queries += [
+            f'{t} stars:>={active_min_stars} pushed:>={since} fork:false archived:false'
+            for t in topics
+        ]
 
     articles: list[Article] = []
-    for q in queries:
+    total = len(queries)
+    pace = 2.2 if token else 6.5
+    for idx, q in enumerate(queries, 1):
         try:
             r = await client.get(
                 "https://api.github.com/search/repositories",
@@ -99,15 +107,20 @@ async def collect_github(cfg: dict, client: httpx.AsyncClient, start: datetime) 
             r.raise_for_status()
             items = r.json().get("items", [])
         except Exception as exc:  # 单个查询失败不影响整体
-            print(f"  [github] 查询失败 ({q}): {exc}")
-            continue
+            print(f"  [github] {idx}/{total} 查询失败 ({q}): {exc}", flush=True)
+            items = []
 
         for it in items:
+            if it.get("fork") or it.get("archived"):
+                continue
             stars = int(it.get("stargazers_count") or 0)
             if stars < min_stars:
                 continue
             created = _to_dt(it.get("created_at"))
-            if created is None:
+            # 活跃老仓库的 createdAt 可能是几年前，用最近推送时间才不会被时间窗误杀
+            pushed = _to_dt(it.get("pushed_at"))
+            published = pushed or created
+            if published is None:
                 continue
             license_info = it.get("license") or {}
             articles.append(
@@ -116,7 +129,7 @@ async def collect_github(cfg: dict, client: httpx.AsyncClient, start: datetime) 
                     source="github",
                     title=it["full_name"],
                     url=it["html_url"],
-                    published_at=created,
+                    published_at=published,
                     raw_summary=it.get("description") or "",
                     heat=stars,
                     tags=(it.get("topics") or [])[:8],
@@ -126,12 +139,18 @@ async def collect_github(cfg: dict, client: httpx.AsyncClient, start: datetime) 
                         "language": it.get("language"),
                         "license": license_info.get("spdx_id"),
                         "homepage": it.get("homepage"),
+                        "created_at": it.get("created_at"),
                         "pushed_at": it.get("pushed_at"),
                     },
                 )
             )
-        # 未认证时 Search API 限 10 次/分钟
-        await asyncio.sleep(0.4)
+        print(f"  [github] {idx}/{total} +{len(items)} 条（{q}）", flush=True)
+
+        if idx < total:
+            # Search API 未认证 10 次/分钟、认证后 30 次/分钟。
+            # 查询数会随 topic 翻倍，间隔必须按限额来，否则连续 403。
+            # 失败时同样要等，否则紧接着的下一条查询必然继续 403。
+            await asyncio.sleep(pace)
 
     return articles
 
@@ -468,18 +487,25 @@ async def collect_all(cfg: dict, start: datetime) -> tuple[list[Article], dict[s
     async with httpx.AsyncClient(
         headers={"User-Agent": USER_AGENT}, follow_redirects=True
     ) as client:
-        results = await asyncio.gather(
-            *[fn(c.get(cfg_key, {}), client, start) for _, cfg_key, fn in jobs],
-            return_exceptions=True,
-        )
+
+        async def run(name: str, cfg_key: str, fn) -> tuple[str, list[Article]]:
+            t0 = time.perf_counter()
+            try:
+                result = await fn(c.get(cfg_key, {}), client, start)
+            except Exception as exc:
+                print(f"  [collect] {name} 异常: {exc}", flush=True)
+                return name, []
+            # 谁先跑完谁先打印：GitHub 受 Search API 限流要一分多钟，
+            # 没有这条日志会让人以为整个采集卡住了。
+            print(f"  [collect] {name:<10s} {len(result):3d} 条  "
+                  f"{time.perf_counter() - t0:5.1f}s", flush=True)
+            return name, result
+
+        results = await asyncio.gather(*[run(*j) for j in jobs])
 
     articles: list[Article] = []
     stat: dict[str, int] = {}
-    for (name, _, _), result in zip(jobs, results):
-        if isinstance(result, Exception):
-            print(f"  [collect] {name} 异常: {result}")
-            stat[name] = 0
-            continue
-        stat[name] = len(result)
-        articles.extend(result)
+    for name, items in results:
+        stat[name] = len(items)
+        articles.extend(items)
     return articles, stat

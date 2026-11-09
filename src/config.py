@@ -37,16 +37,23 @@ def parse_push_time(value: str) -> tuple[int, int]:
     return hh_i, mm_i
 
 
-def compute_window(cfg: dict[str, Any]) -> tuple[datetime, datetime]:
-    """计算统计窗口：[昨天推送时间, 今天推送时间)，本地时区。
+def compute_window(
+    cfg: dict[str, Any], now_end: bool = False
+) -> tuple[datetime, datetime]:
+    """计算统计窗口，本地时区。
 
-    用带时区的 datetime，避免 Python 3.12+ 里 datetime.utcnow() 的废弃告警，
-    也避免「本地时间 vs UTC」比较出错。
+    默认是「昨天推送时间 → 今天推送时间」。
+    now_end=True 时截止到当前时刻，窗口为「最近 24h」，用于下午手动调试：
+    否则 08:30 之后发布的内容会被上界挡掉。
     """
     tz = ZoneInfo(cfg.get("timezone", "Asia/Shanghai"))
-    hour, minute = parse_push_time(cfg.get("push_time", "08:30"))
-
     now = datetime.now(tz)
+
+    if now_end:
+        end = now
+        return end - timedelta(days=1), end
+
+    hour, minute = parse_push_time(cfg.get("push_time", "08:30"))
     end = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
     if now < end:
         # 还没到今天的推送时间，窗口回退一天

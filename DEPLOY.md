@@ -12,10 +12,11 @@
 | 本地路径 | `E:\pythonProject\ai-daily` |
 | 仓库 | https://github.com/LongjiangLi/ai-daily |
 | 默认分支 | `main` |
-| 推送时间 | 每天 **08:30**（北京） |
-| cron | `30 0 * * *`（UTC 00:30） |
+| 触发时间 | 每天 **08:05**（北京），邮件通常 **08:10~08:28** 到达 |
+| cron | `5 0 * * *`（UTC 00:05） |
+| 统计窗口 | 最近 24h（运行时带 `--now`，截止到实际触发时刻） |
 | 运行时 | GitHub Actions / ubuntu-latest |
-| 单次耗时 | 2~4 分钟（首次约 5 分钟） |
+| 单次耗时 | 约 3 分钟（首次约 5 分钟） |
 | 月用量 | 约 90 分钟 / 2000 分钟免费额度 |
 | LLM 成本 | 约 ¥0.1/天，¥3/月 |
 
@@ -24,13 +25,14 @@
 ## 1. 架构速览
 
 ```
-GitHub Actions (cron 30 0 * * *)
+GitHub Actions (cron 5 0 * * *, 运行 main.py --now)
         │
         ├─① 采集   GitHub / HuggingFace / arXiv / HN / RSS（并发）
         ├─② 粗筛   去重 → 时间窗 → 关键词过滤 → 截断
-        ├─③④⑤⑥ LLM 打分分桶 → 三段抽取 → 头条趋势（DeepSeek）
-        ├─⑦ 渲染  Jinja2 → HTML 邮件
-        └─⑧ 发信  SMTP
+        ├─③④ LLM 分批打分分桶（批次并发）
+        ├─⑤ 抽取  本地/前沿/开源/Agent/资讯 + 头条趋势（6 次调用并发）
+        ├─⑥ 渲染  Jinja2 → HTML 邮件
+        └─⑦ 发信  SMTP
                 │
                 └─ 提交 state.json 回仓库（跨天去重 + 保活）
 ```
@@ -92,12 +94,15 @@ Settings → Project: ai-daily → Python Interpreter
 | 配置 | 当前值 | 说明 |
 |---|---|---|
 | `timezone` | `Asia/Shanghai` | 时区 |
-| `push_time` | `"08:30"` | **改时间要同时改 workflow 的 cron** |
+| `push_time` | `"08:05"` | 只影响**手动运行**（不带 `--now`）时的窗口锚点；定时任务用 `--now`，窗口是最近 24h |
 | `llm.temperature` | `0` | 降低输出随机性 |
 | `llm.model` | `deepseek-chat` | 批量打分/抽取 |
 | `llm.reasoning_model` | `deepseek-reasoner` | 仅前沿影响分析 |
 | `prefilter.max_total` | `90` | **直接决定 token 成本** |
+| `prefilter.github_mix` | 成熟 12 / 成长 8 / Java 5 | GitHub 候选构成，不足时按 star 补满 |
 | `collectors.github.enabled` | `true` | |
+| `collectors.github.include_active` | `true` | 额外抓「近 24h 有推送的成熟仓库」，只抓新建仓库会全是空项目 |
+| `collectors.github.active_min_stars` | `200` | 成熟仓库的 star 门槛 |
 | `collectors.huggingface.enabled` | `true` | |
 | `collectors.arxiv.enabled` | `true` | |
 | `collectors.hackernews.enabled` | `true` | |
@@ -111,7 +116,9 @@ Settings → Project: ai-daily → Python Interpreter
 | 源 | window_hours | 原因 |
 |---|---|---|
 | github | 24 | 新仓库当天可见 |
-| huggingface | 72 | 模型上架到被发现需时间 |
+| huggingface（模型） | `models_window_hours: 336` | 模型榜是「近期热门」，createdAt 常是几周前 |
+| huggingface（论文） | `papers_window_hours: 168` | daily papers 周末停更，短窗口会漏整批 |
+| huggingface（兜底） | 72 | 上面两项未配置时使用 |
 | arxiv | 72 | 论文公告延迟 1~2 天 |
 | rss | 36 | 博客更新节奏不一 |
 | hackernews | 24 | 实时 |
@@ -193,26 +200,28 @@ git push -u origin main
 ```yaml
 on:
   schedule:
-    - cron: '30 0 * * *'   # UTC 00:30 = 北京 08:30
+    - cron: '5 0 * * *'    # UTC 00:05 = 北京 08:05（提前量用于吸收 Actions 的触发延迟）
   workflow_dispatch: {}    # 支持手动触发
 ```
 
 ### 关键事实
 
 - **不是常驻进程**：到点启动临时 runner，跑完销毁，两次触发间不占资源
-- **实际到达时间 8:35~8:50**：GitHub 定时任务有排队延迟，属正常
+- **实际到达时间 08:10~08:28**：cron 定在 08:05，Actions 排队延迟 5~20 分钟 +
+  运行约 3 分钟。**不能掐点写 08:30**，否则必然 08:40 以后才到
 - **不会并发**：`concurrency` 已配置，上一次没跑完会排队
 - **60 天无提交会被禁用**：本 workflow 每天提交 `state.json` 保活，正常不会触发
   - 若连续 60 天全失败（如 Secret 失效导致跑不到 persist 步骤），仍可能被禁用
 
-### 改推送时间（两处必须同步改）
+### 改到达时间
 
 | 文件 | 改什么 |
 |---|---|
-| `config.yaml` | `push_time: "08:30"` |
-| `.github/workflows/daily.yml` | `cron: '30 0 * * *'` |
+| `.github/workflows/daily.yml` | `cron: '5 0 * * *'`（真正决定几点跑） |
+| `config.yaml` | `push_time`（只影响手动运行，建议与 cron 保持一致便于对照） |
 
-换算：**北京时间 − 8 小时 = cron 的 UTC 时间**。
+换算：**北京时间 − 8 小时 = cron 的 UTC 时间**，再留 25 分钟左右给触发延迟。
+运行命令必须带 `--now`，否则窗口会锚定到 `push_time`，提前跑会退回到前一天。
 
 ---
 
@@ -235,18 +244,27 @@ https://github.com/LongjiangLi/ai-daily/actions
 ### 正常运行的日志特征
 
 ```
-统计窗口：2026-11-08 08:30 → 2026-11-09 08:30 (Asia/Shanghai)
+统计窗口：2026-11-08 08:07 → 2026-11-09 08:07 (Asia/Shanghai)
 ① 采集
-    原始 234 条 {'github': 11, 'hf_models': 60, ...}
+  [collect] hf_papers   30 条    0.8s
+  [collect] arxiv       40 条    0.9s
+  [github] 3/16 +30 条（topic:agent created:>=2026-11-08 fork:false archived:false）
+  ...
+    原始 234 条 {'github': 66, 'hf_models': 60, ...}（58.2s）
 ② 粗筛
-    送入 LLM 20 条
+    去重后 190/234 条（最近已推送 44 条）
+    时间窗内 85 条
+    关键词过滤后 78 条
+    GitHub 候选池：成熟 102 / 高成长 5 / Java 8
+    截断后送入 LLM 78 条
 ③ 初始化 LLM
 ④ 打分与分桶
-⑤ 抽取内容（本地 4 / 前沿 2 / 开源 5 / Agent 3 / 资讯 4）
-⑥ 生成头条与趋势
+    打分完成（34.6s）
+⑤ 抽取内容与头条（本地 4 / 前沿 2 / 开源 5 / Agent 3 / 资讯 4）
+    抽取与摘要完成（71.3s）
     LLM 调用 9 次 ｜ 输入 51,234 tok ｜ 输出 7,890 tok ｜ 约 ¥0.1205
-⑦ 渲染
-⑧ 发送邮件
+⑥ 渲染
+⑦ 发送邮件
   [mail] 已发送至 xxx@qq.com
 完成
 ```
@@ -331,6 +349,8 @@ uv run main.py --dry-run      # 只采集+渲染，不调 LLM、不发信
 uv run main.py --no-mail      # 跑完整流程，不发信
 uv run main.py                # 完整运行并发信
 uv run main.py --out x.html   # 指定 HTML 输出路径
+uv run main.py --now          # 窗口 = 最近 24h；定时任务默认用这个模式
+uv run main.py --ignore-seen  # 忽略最近 3 天推送过的条目，不写 state
 
 # ---- Git ----
 git status -sb                # 看是否 ahead（未推送）

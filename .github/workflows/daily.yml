@@ -2,10 +2,12 @@ name: daily-digest
 
 on:
   schedule:
-    # UTC 00:30 = 北京时间 08:30
-    # 注意：Actions 定时任务通常会延迟 5-20 分钟触发，属正常现象
-    # 改推送时间时，这里和 config.yaml 的 push_time 必须同时改
-    - cron: '30 0 * * *'
+    # UTC 00:05 = 北京时间 08:05。
+    # Actions 的 cron 通常会延迟 5~20 分钟触发，所以提前 25 分钟：
+    # 整条链路约 3 分钟，跑完仍能赶在 08:30 前发出。
+    # 运行命令带 --now，统计窗口是「最近 24h」，不依赖 08:30 这个固定锚点；
+    # 实际窗口起点会随触发时间漂移，靠 state.json 去重避免重复推送。
+    - cron: '5 0 * * *'
   workflow_dispatch: {}   # 支持手动触发
 
 permissions:
@@ -66,7 +68,7 @@ jobs:
           MAIL_FROM:          ${{ secrets.MAIL_FROM }}
           MAIL_TO:            ${{ secrets.MAIL_TO }}
           GITHUB_TOKEN:       ${{ secrets.GITHUB_TOKEN }}
-        run: uv run main.py
+        run: uv run main.py --now
 
       - name: Persist state
         run: |
