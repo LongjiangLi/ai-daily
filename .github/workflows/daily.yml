@@ -21,13 +21,34 @@ jobs:
     timeout-minutes: 20
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v6
         with:
+          # 与本地 uv 版本保持一致，避免 lock 文件格式不兼容导致 --frozen 失败
+          version: "0.12.18"
           enable-cache: true
           python-version: '3.12'
+
+      - name: Show versions
+        run: |
+          uv --version
+          uv run python --version
+
+      - name: Check secrets
+        env:
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          MAIL_FROM: ${{ secrets.MAIL_FROM }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+        run: |
+          for k in LLM_API_KEY SMTP_HOST SMTP_PORT SMTP_USER SMTP_PASS MAIL_FROM MAIL_TO; do
+            if [ -n "${!k}" ]; then echo "✓ $k"; else echo "✗ $k 未配置"; fi
+          done
 
       - name: Sync dependencies
         run: uv sync --frozen
