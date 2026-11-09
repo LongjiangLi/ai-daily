@@ -1,0 +1,21 @@
+[project]
+name = "ai-daily"
+version = "0.1.0"
+description = "每日 AI 领域动态日报：采集 -> 粗筛 -> LLM 抽取 -> 邮件"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "httpx>=0.28,<1.0",
+    "feedparser>=6.0.11",
+    "pydantic>=2.9",
+    "jinja2>=3.1.4",
+    "openai>=1.60",
+    "pyyaml>=6.0.2",
+    "python-dotenv>=1.0.1",
+    # Windows 不自带 IANA 时区数据，zoneinfo 需要它
+    "tzdata>=2024.1",
+]
+
+[tool.uv]
+# 这是一个应用而不是库，不需要构建/安装自身
+package = false

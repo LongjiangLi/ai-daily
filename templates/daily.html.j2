@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI 日报 · {{ date }}</title>
+</head>
+<body style="margin:0;padding:0;background:#f4f5f7;-webkit-font-smoothing:antialiased;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f5f7;padding:24px 12px;">
+<tr><td align="center">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0"
+       style="max-width:660px;background:#ffffff;border-radius:12px;overflow:hidden;
+              font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;
+              color:#1f2328;font-size:15px;line-height:1.65;">
+
+  <!-- 头部 -->
+  <tr><td style="background:#1a1d23;padding:26px 28px 22px;">
+    <div style="color:#ffffff;font-size:22px;font-weight:700;letter-spacing:0.5px;">🤖 AI 日报</div>
+    <div style="color:#9aa4b2;font-size:13px;margin-top:6px;">
+      {{ date }}（{{ weekday }}）｜窗口 {{ window_start }} → {{ window_end }}
+    </div>
+    <div style="color:#6b7480;font-size:12px;margin-top:4px;">
+      扫描 {{ scanned }} 条 · 精选 {{ selected }} 条
+    </div>
+  </td></tr>
+
+  <!-- 锚点导航 -->
+  <tr><td style="padding:12px 28px;background:#fafbfc;border-bottom:1px solid #e8eaed;
+                 font-size:13px;color:#57606a;">
+    <a href="#llm" style="color:#0969da;text-decoration:none;margin-right:14px;">大模型</a>
+    <a href="#github" style="color:#0969da;text-decoration:none;margin-right:14px;">开源项目</a>
+    <a href="#agent" style="color:#0969da;text-decoration:none;margin-right:14px;">Agent</a>
+    <a href="#news" style="color:#0969da;text-decoration:none;">资讯</a>
+  </td></tr>
+
+  <!-- 今日三句话 -->
+  <tr><td style="padding:22px 28px 6px;">
+    <div style="font-size:16px;font-weight:700;margin-bottom:10px;">📌 今日三句话</div>
+    {% if headline %}
+    <ol style="margin:0;padding-left:20px;color:#24292f;">
+      {% for h in headline %}
+      <li style="margin-bottom:6px;">{{ h }}</li>
+      {% endfor %}
+    </ol>
+    {% else %}
+    <div style="font-size:13px;color:#8b949e;">今日暂无最新数据</div>
+    {% endif %}
+  </td></tr>
+
+  <!-- 趋势信号 -->
+  <tr><td style="padding:16px 28px;">
+    <div style="font-size:16px;font-weight:700;margin-bottom:10px;">🔥 趋势信号</div>
+    {% if signals %}
+    {% for s in signals %}
+    <div style="border-left:3px solid #d4a72c;background:#fffbf0;padding:10px 14px;margin-bottom:8px;border-radius:0 6px 6px 0;">
+      <div style="font-weight:600;font-size:14px;">{{ s.name }}</div>
+      {% if s.evidence %}<div style="font-size:13px;color:#57606a;margin-top:2px;">依据：{{ s.evidence }}</div>{% endif %}
+      {% if s.read %}<div style="font-size:13px;color:#24292f;margin-top:2px;">{{ s.read }}</div>{% endif %}
+    </div>
+    {% endfor %}
+    {% else %}
+    <div style="font-size:13px;color:#8b949e;">今日暂无最新数据</div>
+    {% endif %}
+  </td></tr>
+
+  <!-- ============ 大模型 ============ -->
+  <tr><td id="llm" style="padding:20px 28px 4px;">
+    <div style="font-size:18px;font-weight:700;border-bottom:2px solid #1f2328;padding-bottom:8px;">🧠 大模型</div>
+  </td></tr>
+
+  <tr><td style="padding:14px 28px 4px;">
+    <div style="font-size:14px;font-weight:700;color:#57606a;letter-spacing:1px;">本地可部署开源模型</div>
+  </td></tr>
+  {% if not local_models %}
+  <tr><td style="padding:6px 28px 10px;">
+    <div style="font-size:13px;color:#8b949e;">今日暂无最新数据</div>
+  </td></tr>
+  {% endif %}
+  {% for m in local_models %}
+  <tr><td style="padding:10px 28px;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0"
+           style="border:1px solid #e3e6ea;border-left:4px solid #2da44e;border-radius:8px;">
+      <tr><td style="padding:14px 16px;">
+        <div style="font-size:16px;font-weight:700;">
+          <a href="{{ m.url }}" style="color:#1f2328;text-decoration:none;">{{ m.name }}</a>
+          {% if m.source_label %}<span style="font-size:11px;color:#57606a;background:#eef1f4;border-radius:4px;padding:1px 6px;margin-left:6px;font-weight:400;">{{ m.source_label }}</span>{% endif %}
+        </div>
+        <div style="font-size:13px;color:#57606a;margin-top:6px;">
+          📦 {{ m.params }}{% if m.license %} · {{ m.license }}{% endif %}{% if m.context %} · {{ m.context }} 上下文{% endif %}
+        </div>
+        {% if m.vram %}
+        <div style="font-size:13px;color:#57606a;margin-top:3px;">
+          💾 显存：{% for v in m.vram %}{{ v.label }} ≈ {{ v.gb }}G{% if not loop.last %} ｜ {% endif %}{% endfor %}
+        </div>
+        {% endif %}
+        {% if m.speed %}
+        <div style="font-size:13px;color:#57606a;margin-top:3px;">⚡ {{ m.speed }}</div>
+        {% endif %}
+        {% if m.benchmarks %}
+        <div style="font-size:13px;color:#57606a;margin-top:3px;">📊 {{ m.benchmarks }}</div>
+        {% endif %}
+        {% if m.stacks %}
+        <div style="font-size:13px;color:#57606a;margin-top:3px;">🔧 {{ m.stacks | join(' / ') }}</div>
+        {% endif %}
+        {% if m.judgement %}
+        <div style="font-size:13px;color:#1a7f37;margin-top:8px;background:#f0fdf4;padding:8px 10px;border-radius:6px;">
+          🎯 {{ m.judgement }}
+        </div>
+        {% endif %}
+      </td></tr>
+    </table>
+  </td></tr>
+  {% endfor %}
+
+  <tr><td style="padding:18px 28px 4px;">
+    <div style="font-size:14px;font-weight:700;color:#57606a;letter-spacing:1px;">前沿模型进化影响</div>
+  </td></tr>
+  {% if not frontier %}
+  <tr><td style="padding:6px 28px 10px;">
+    <div style="font-size:13px;color:#8b949e;">今日暂无最新数据</div>
+  </td></tr>
+  {% endif %}
+  {% for f in frontier %}
+  <tr><td style="padding:10px 28px;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0"
+           style="border:1px solid #e3e6ea;border-left:4px solid #0969da;border-radius:8px;">
+      <tr><td style="padding:14px 16px;">
+        <div style="font-size:16px;font-weight:700;">
+          <a href="{{ f.url }}" style="color:#1f2328;text-decoration:none;">{{ f.name }}</a>
+          {% if f.source_label %}<span style="font-size:11px;color:#57606a;background:#eef1f4;border-radius:4px;padding:1px 6px;margin-left:6px;font-weight:400;">{{ f.source_label }}</span>{% endif %}
+        </div>
+        {% if f.change %}<div style="font-size:13px;color:#57606a;margin-top:6px;">📈 {{ f.change }}</div>{% endif %}
+        {% if f.price %}<div style="font-size:13px;color:#57606a;margin-top:3px;">💰 {{ f.price }}</div>{% endif %}
+        {% if f.impact %}
+        <div style="font-size:13px;color:#24292f;margin-top:8px;">
+          🌊 连带影响：
+          <ul style="margin:4px 0 0;padding-left:18px;">
+            {% for i in f.impact %}<li style="margin-bottom:2px;">{{ i }}</li>{% endfor %}
+          </ul>
+        </div>
+        {% endif %}
+        {% if f.opportunity %}
+        <div style="font-size:13px;color:#1a7f37;margin-top:8px;background:#f0fdf4;padding:8px 10px;border-radius:6px;">
+          🎯 {{ f.opportunity }}
+        </div>
+        {% endif %}
+        {% if f.risk %}
+        <div style="font-size:13px;color:#bc4c00;margin-top:6px;">⚠️ {{ f.risk }}</div>
+        {% endif %}
+      </td></tr>
+    </table>
+  </td></tr>
+  {% endfor %}
+
+  <!-- ============ 通用板块宏 ============ -->
+  {% macro section_block(items, title, anchor, color) %}
+  <tr><td id="{{ anchor }}" style="padding:22px 28px 4px;">
+    <div style="font-size:18px;font-weight:700;border-bottom:2px solid #1f2328;padding-bottom:8px;">{{ title }}</div>
+  </td></tr>
+  {% if not items %}
+  <tr><td style="padding:6px 28px 10px;">
+    <div style="font-size:13px;color:#8b949e;">今日暂无最新数据</div>
+  </td></tr>
+  {% endif %}
+  {% for it in items %}
+  <tr><td style="padding:12px 28px;">
+    <div style="border-left:3px solid {{ color }};padding-left:12px;">
+      <div style="font-size:15px;font-weight:600;">
+        <a href="{{ it.url }}" style="color:#1f2328;text-decoration:none;">{{ it.title }}</a>
+        {% if it.source_label %}<span style="font-size:11px;color:#57606a;background:#eef1f4;border-radius:4px;padding:1px 6px;margin-left:6px;font-weight:400;">{{ it.source_label }}</span>{% endif %}
+        {% if it.meta %}<span style="font-size:12px;color:#8b949e;font-weight:400;margin-left:6px;">{{ it.meta }}</span>{% endif %}
+      </div>
+      {% if it.what %}<div style="font-size:14px;color:#24292f;margin-top:4px;">{{ it.what }}</div>{% endif %}
+      {% if it.why_matters %}<div style="font-size:13px;color:#57606a;margin-top:2px;">{{ it.why_matters }}</div>{% endif %}
+      {% if it.opportunity %}<div style="font-size:13px;color:#1a7f37;margin-top:4px;">🎯 {{ it.opportunity }}</div>{% endif %}
+    </div>
+  </td></tr>
+  {% endfor %}
+  {% endmacro %}
+
+  {{ section_block(github, '🧩 开源项目', 'github', '#8250df') }}
+  {{ section_block(agent, '🤝 Agent 动态', 'agent', '#1a7f37') }}
+  {{ section_block(news, '📰 资讯', 'news', '#bf8700') }}
+
+  <!-- 底部 -->
+  <tr><td style="padding:22px 28px 28px;border-top:1px solid #e8eaed;margin-top:10px;">
+    <div style="font-size:12px;color:#8b949e;">
+      📊 {% for k, v in stats.items() %}{{ k }} {{ v }}{% if not loop.last %} / {% endif %}{% endfor %}
+    </div>
+    {% if usage %}
+    <div style="font-size:12px;color:#b1b8c0;margin-top:4px;">{{ usage }}</div>
+    {% endif %}
+    <div style="font-size:12px;color:#b1b8c0;margin-top:8px;">由 ai-daily 自动生成</div>
+  </td></tr>
+
+</table>
+</td></tr>
+</table>
+</body>
+</html>

@@ -1,0 +1,158 @@
+# ================= 时间与窗口 =================
+timezone: Asia/Shanghai
+# 每天推送时间（本地时区）。改了这里，记得同步改 .github/workflows/daily.yml 的 cron
+push_time: "08:30"
+# 统计窗口 = 昨天 08:30 → 今天 08:30（本地时区）
+
+# ================= LLM =================
+llm:
+  provider: deepseek            # deepseek | claude | openai（兼容 OpenAI 协议即可）
+  base_url: https://api.deepseek.com
+  model: deepseek-chat          # 批量打分/抽取：便宜、快
+  reasoning_model: deepseek-reasoner  # 仅用于「前沿影响分析」
+  # 0 = 尽量确定性输出；同一天重复运行结果更稳定
+  temperature: 0
+  max_tokens: 4000
+  # 预算估算用（元 / 百万 token），仅用于打印成本
+  price_input_per_m: 2.0
+  price_output_per_m: 3.0
+
+# ================= 板块配额 =================
+# 内容不足时不凑数：允许 LLM 返回空数组
+sections:
+  llm_local:    { min: 3, max: 5 }
+  llm_frontier: { min: 1, max: 3 }
+  github:       { min: 3, max: 5 }
+  agent:        { min: 2, max: 3 }
+  news:         { min: 3, max: 4 }
+
+# ================= 数据源 =================
+# window_hours：每个源的回看窗口（小时）
+# 论文、模型发布有延迟，严格 24h 会漏掉；RSS/HN 保持 24-36h 即可
+collectors:
+  github:
+    enabled: true
+    window_hours: 24
+    per_page: 30
+    min_stars: 10
+    # 是否额外抓「近 24h 活跃的老仓库」（会明显增加条目，默认关闭）
+    include_active: false
+    topics:
+      - topic:llm
+      - topic:ai-agents
+      - topic:agent
+      - topic:rag
+      - topic:mcp
+      - topic:llm-inference
+
+  huggingface:
+    enabled: true
+    window_hours: 72        # 新模型上架到被发现通常有延迟
+    models_limit: 60        # 拉取候选数量
+    detail_limit: 15        # 拉取模型详情的数量（用于取参数/许可证）
+    readme_limit: 8         # 拉取 README 的数量（显存/速度信息来源）
+    min_likes: 5
+    papers_limit: 30
+
+  arxiv:
+    enabled: true
+    window_hours: 72        # arXiv 公告有 1-2 天延迟
+    categories: [cs.CL, cs.AI, cs.MA]
+    max_results: 40
+
+  hackernews:
+    enabled: true
+    window_hours: 24
+    min_points: 50
+    queries: [LLM, "AI agent", "open source model"]
+
+  rss:
+    enabled: true
+    window_hours: 36
+    # 注意：部分站点 RSS 地址会变，失效时看日志里的 [rss] 报错
+    feeds:
+      # 注意：Anthropic 官方没有 RSS，相关内容靠 HN / Simon Willison 覆盖
+      - { name: OpenAI,           url: "https://openai.com/news/rss.xml" }
+      - { name: Google DeepMind,  url: "https://deepmind.google/blog/rss.xml" }
+      - { name: HuggingFace Blog, url: "https://huggingface.co/blog/feed.xml" }
+      - { name: Simon Willison,   url: "https://simonwillison.net/atom/everything/" }
+      - { name: LangChain,        url: "https://blog.langchain.dev/rss/" }
+      - { name: 机器之心,          url: "https://www.jiqizhixin.com/rss" }
+      - { name: 量子位,            url: "https://www.qbitai.com/feed" }
+
+  reddit:
+    # 已关闭：匿名 RSS 限流严重，且 GitHub Actions 的机房 IP 常被直接拦截。
+    # 日报价值主要由 HF / arXiv / GitHub / RSS 提供，Reddit 只是补充。
+    # 想重新启用：改成 true，并确认当前网络能稳定抓到。
+    enabled: false
+    window_hours: 24
+    delay_seconds: 8        # 板块之间的间隔，太小会 429
+    subreddits: [LocalLLaMA]
+
+# ================= 粗筛 =================
+prefilter:
+  max_total: 90            # 送进 LLM 的最大条目数（直接决定成本）
+  max_per_source: 25
+  min_relevance: 1         # 关键词命中数下限
+  # 只对这几类做关键词过滤；其余（GitHub / RSS / arXiv 等垂类源）默认都相关
+  filter_sources: [hackernews, hf_model, reddit]
+
+# ================= 关键词 =================
+# 用于本地规则粗筛 + dry-run 时的大致分类
+keywords:
+  local_model:
+    - gguf
+    - q4
+    - q8
+    - quantization
+    - 量化
+    - ollama
+    - llama.cpp
+    - llama-cpp
+    - vllm
+    - lm studio
+    - local
+    - on-device
+    - 本地部署
+    - 显存
+    - vram
+    - 单卡
+  frontier:
+    - release
+    - announce
+    - 发布
+    - 新版
+    - gpt-
+    - claude
+    - gemini
+    - deepseek
+    - qwen
+    - llama
+    - mistral
+    - context window
+    - 上下文
+  agent:
+    - agent
+    - 智能体
+    - tool use
+    - 工具调用
+    - mcp
+    - workflow
+    - langchain
+    - llamaindex
+    - multi-agent
+    - autonomous
+    - function calling
+    - 编排
+  # 与上面任一命中即算「相关」
+  general:
+    - llm
+    - 大模型
+    - open source
+    - 开源
+    - transformer
+    - fine-tune
+    - 微调
+    - benchmark
+    - inference
+    - 推理
