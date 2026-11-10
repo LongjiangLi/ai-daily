@@ -43,7 +43,12 @@ def mark_seen(state: dict[str, Any], articles: list[Article]) -> None:
         seen[a.id] = now
 
 
-def prune(state: dict[str, Any], days: int = 14) -> None:
+def prune(state: dict[str, Any], days: int = 7) -> None:
+    """删除 N 天前的去重记录。
+
+    去重实际只看最近 3 天（见 seen_ids）；这里保留 7 天，是给
+    「任务延迟 / 跨天补发」留一倍缓冲，同时控制 state.json 的体积。
+    """
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
     seen = state.get("seen", {})
     for key in [k for k, v in seen.items() if str(v) < cutoff]:
