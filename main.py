@@ -98,6 +98,15 @@ async def run_async(args: argparse.Namespace) -> None:
     state = load_state()
     selected = None
 
+    # 当天已发送则直接退出：主 cron 与兜底 cron 可能都触发，
+    # 被延迟的主任务也可能在兜底任务之后才启动，靠这个标记避免重复邮件。
+    # dry-run / --no-mail / --force 不参与该检查。
+    if (not args.dry_run and not args.no_mail and not args.force
+            and state.get("last_sent_date") == date_str):
+        _log(f"    {date_str} 的日报已发送过"
+             f"（{state.get('last_sent_at', '时间未知')}），跳过；--force 可强制重发")
+        return
+
     _log("① 采集")
     _t = time.perf_counter()
     articles, collect_stat = await collect_all(cfg, start)
@@ -189,6 +198,11 @@ async def run_async(args: argparse.Namespace) -> None:
     subject = f"AI 日报 · {report['date']}（{report['weekday']}）"
     send_mail(subject, html, plain)
 
+    # 记录「今天已发」：兜底 cron / 手动补发靠它判断是否还要再发一封。
+    # end.tzinfo 就是 config 里配置的时区（默认 Asia/Shanghai）。
+    state["last_sent_date"] = date_str
+    state["last_sent_at"] = datetime.now(end.tzinfo).isoformat(timespec="seconds")
+
     if args.ignore_seen:
         _log("（--ignore-seen：不更新 state）")
         return
@@ -221,6 +235,11 @@ def main() -> None:
         "--ignore-seen",
         action="store_true",
         help="忽略 state.json 里最近推送过的条目（调试用，不会写 state）",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="即使 state.json 记录今天已发送过，也强制再发一封",
     )
     parser.add_argument("--out", default=str(PROJECT_ROOT / "preview.html"), help="HTML 输出路径")
     args = parser.parse_args()

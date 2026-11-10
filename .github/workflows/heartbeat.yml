@@ -1,0 +1,43 @@
+name: digest-heartbeat
+
+on:
+  schedule:
+    # UTC 00:45 = 北京 08:45。主/兜底任务都应在 08:40 前跑完；
+    # 这里再等 10 分钟（心跳脚本内部轮询），仍无发送记录才发告警邮件。
+    - cron: '45 0 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read          # 只读：拉取 state.json，不回写
+
+concurrency:
+  group: digest-heartbeat
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.12.18"
+          enable-cache: true
+          python-version: '3.12'
+
+      - name: Sync dependencies
+        run: uv sync --frozen
+
+      - name: Check today's digest and alert if missing
+        env:
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          MAIL_FROM: ${{ secrets.MAIL_FROM }}
+          MAIL_TO:   ${{ secrets.MAIL_TO }}
+        run: uv run heartbeat.py

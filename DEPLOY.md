@@ -12,12 +12,13 @@
 | 本地路径 | `E:\pythonProject\ai-daily` |
 | 仓库 | https://github.com/LongjiangLi/ai-daily |
 | 默认分支 | `main` |
-| 触发时间 | 每天 **08:05**（北京），邮件通常 **08:10~08:28** 到达 |
-| cron | `5 0 * * *`（UTC 00:05） |
+| 触发时间 | 主任务 **08:17**、兜底 **08:40**（北京），邮件通常 **08:20~08:45** 到达 |
+| cron | `17 0 * * *` + `40 0 * * *`（UTC 00:17 / 00:40） |
+| 心跳告警 | 每天 **08:45** 检查当天是否已发送，没有则发告警邮件 |
 | 统计窗口 | 最近 24h（运行时带 `--now`，截止到实际触发时刻） |
 | 运行时 | GitHub Actions / ubuntu-latest |
 | 单次耗时 | 约 3 分钟（首次约 5 分钟） |
-| 月用量 | 约 90 分钟 / 2000 分钟免费额度 |
+| 月用量 | 约 120 分钟 / 2000 分钟免费额度（告警日心跳最多多等 10 分钟） |
 | LLM 成本 | 约 ¥0.1/天，¥3/月 |
 
 ---
@@ -25,7 +26,7 @@
 ## 1. 架构速览
 
 ```
-GitHub Actions (cron 5 0 * * *, 运行 main.py --now)
+GitHub Actions (cron 17 0 / 40 0 * * *, 运行 main.py --now)
         │
         ├─① 采集   GitHub / HuggingFace / arXiv / HN / RSS（并发）
         ├─② 粗筛   去重 → 时间窗 → 关键词过滤 → 截断
@@ -56,9 +57,11 @@ ai-daily/
 │   ├── state.py            去重状态
 │   ├── models.py           数据模型 + 来源标签
 │   └── config.py           配置加载 + 时间窗计算
+├── heartbeat.py            08:45 心跳检查（当天未发送则告警）
 ├── prompts/                5 个 prompt 模板
 ├── templates/daily.html.j2 邮件模板
-└── .github/workflows/daily.yml
+├── .github/workflows/daily.yml      主任务 + 兜底任务
+└── .github/workflows/heartbeat.yml  心跳告警
 ```
 
 ---
@@ -94,7 +97,7 @@ Settings → Project: ai-daily → Python Interpreter
 | 配置 | 当前值 | 说明 |
 |---|---|---|
 | `timezone` | `Asia/Shanghai` | 时区 |
-| `push_time` | `"08:05"` | 只影响**手动运行**（不带 `--now`）时的窗口锚点；定时任务用 `--now`，窗口是最近 24h |
+| `push_time` | `"08:17"` | 只影响**手动运行**（不带 `--now`）时的窗口锚点；定时任务用 `--now`，窗口是最近 24h |
 | `llm.temperature` | `0` | 降低输出随机性 |
 | `llm.model` | `deepseek-chat` | 批量打分/抽取 |
 | `llm.reasoning_model` | `deepseek-reasoner` | 仅前沿影响分析 |
@@ -200,16 +203,33 @@ git push -u origin main
 ```yaml
 on:
   schedule:
-    - cron: '5 0 * * *'    # UTC 00:05 = 北京 08:05（提前量用于吸收 Actions 的触发延迟）
-  workflow_dispatch: {}    # 支持手动触发
+    - cron: '17 0 * * *'   # 主任务：UTC 00:17 = 北京 08:17
+    - cron: '40 0 * * *'   # 兜底：UTC 00:40 = 北京 08:40
+  workflow_dispatch:
+    inputs:
+      force:
+        description: '今天已发过也强制重发'
+        type: boolean
+        default: false
 ```
 
 ### 关键事实
 
 - **不是常驻进程**：到点启动临时 runner，跑完销毁，两次触发间不占资源
-- **实际到达时间 08:10~08:28**：cron 定在 08:05，Actions 排队延迟 5~20 分钟 +
-  运行约 3 分钟。**不能掐点写 08:30**，否则必然 08:40 以后才到
-- **不会并发**：`concurrency` 已配置，上一次没跑完会排队
+- **cron 是 best-effort，不是准时保证**：GitHub 官方文档明确写了，高负载时任务会
+  延迟，**“每个整点”就是高负载时段**，负载过高时排队的 job 会被**直接丢弃**——
+  不会产生 failed run，Actions 里也查不到任何记录。社区实测有延迟 4~14 小时、
+  甚至连续多天不触发的案例
+- **为什么不写 00:00/08:00**：整点是全球定时任务最拥堵的时段。主任务放在 00:17，
+  避不开所有延迟，但能降低概率
+- **兜底与去重**：00:40 的兜底任务会在主任务被延迟/丢弃时补发；
+  `main.py` 发信成功后把 `last_sent_date` 写进 `state.json`，同一天再次触发会
+  在采集前直接退出（日志：`2026-11-10 的日报已发送过…跳过`）
+- **不会并发**：`concurrency` 已配置；上一次没跑完时，兜底任务会排队，
+  等主任务结束并提交 state 后再启动，因此能读到最新的 `last_sent_date`
+- **心跳告警**：`heartbeat.yml` 每天 08:45 检查 `last_sent_date`；
+  若仍不是今天，则发一封 `⚠️ AI 日报可能未发出` 的告警邮件。
+  它会先轮询 10 分钟，给仍在延迟中的主/兜底任务留缓冲
 - **60 天无提交会被禁用**：本 workflow 每天提交 `state.json` 保活，正常不会触发
   - 若连续 60 天全失败（如 Secret 失效导致跑不到 persist 步骤），仍可能被禁用
 
@@ -217,11 +237,15 @@ on:
 
 | 文件 | 改什么 |
 |---|---|
-| `.github/workflows/daily.yml` | `cron: '5 0 * * *'`（真正决定几点跑） |
-| `config.yaml` | `push_time`（只影响手动运行，建议与 cron 保持一致便于对照） |
+| `.github/workflows/daily.yml` | 两条 `cron:`（真正决定几点跑；主/兜底） |
+| `.github/workflows/heartbeat.yml` | 心跳 `cron:`（默认比兜底晚 5 分钟） |
+| `config.yaml` | `push_time`（只影响手动运行，建议与主 cron 保持一致便于对照） |
 
-换算：**北京时间 − 8 小时 = cron 的 UTC 时间**，再留 25 分钟左右给触发延迟。
+换算：**北京时间 − 8 小时 = cron 的 UTC 时间**。不要卡整点，也不要把时间写死在
+08:30 之后：延迟无法消除，只能靠兜底 cron + 去重降低影响。
 运行命令必须带 `--now`，否则窗口会锚定到 `push_time`，提前跑会退回到前一天。
+要**严格准时**，只能改用外部定时器在 08:17 调用 `workflow_dispatch` API
+（需要 fine-grained PAT，权限 `Actions: write`）。
 
 ---
 
@@ -236,6 +260,10 @@ https://github.com/LongjiangLi/ai-daily/actions
 ### 手动触发
 
 `Actions` → `daily-digest` → 右上 `Run workflow`
+
+- 默认会先检查 `last_sent_date`：今天已发过就直接退出，不会重复发信
+- 需要强制重发时，勾选 `force` 再运行
+- 只想确认心跳逻辑：`Actions` → `digest-heartbeat` → `Run workflow`
 
 ### 暂停 / 恢复
 
@@ -310,6 +338,8 @@ Actions → 点进失败的 run → 左侧 job "run"
 | `[rss] 拉取失败 <url>` | 该 RSS 地址失效 | 改 `config.yaml` 的 feeds |
 | `无法解析 JSON` | 输出被 max_tokens 截断 | 已内置自动重试 + 修复；仍频繁则调大 `llm.max_tokens` |
 | `[github] 403 rate limit` | 未认证限 10 次/分 | 本地设 `GITHUB_TOKEN`；Actions 已自动注入 |
+| 到了 08:40 仍没收到邮件，Actions 里**连 scheduled run 都没有** | GitHub 的 cron 被延迟或静默丢弃（best-effort，整点最堵） | 这是平台行为，不是配置错误；等兜底任务或手动 `Run workflow`。08:45 心跳会发告警 |
+| 日志出现 `…已发送过…跳过` | 当天已经发过，兜底/手动触发了第二次 | 正常现象；确需重发时勾选 `force` |
 
 ### 8.3 无害的提示（不用处理）
 
@@ -334,6 +364,7 @@ Actions → 点进失败的 run → 左侧 job "run"
 | 7 | PyCharm 显示 Python 3.13 | SDK 条目缓存了旧名字 | 删除后重新添加 `.venv` 解释器 |
 | 8 | Actions 报 `缺少 LLM_API_KEY` | Secret 未配置 | 在仓库 Secrets 中添加 |
 | 9 | 推送上去了但 Actions 用旧版 | 本地提交未 push | `git status -sb` 确认 `ahead N` 后推送 |
+| 10 | 配好定时任务后第二天没收到邮件，Actions 里没有 scheduled run | GitHub 的 `schedule` 是 best-effort；UTC 00:05 紧贴整点拥堵时段，任务被延迟或**静默丢弃**（无失败记录） | 主任务挪到 00:17 + 00:40 兜底 + `last_sent_date` 去重 + 08:45 心跳告警；严格准时需外部定时器调 `workflow_dispatch` |
 
 ---
 
@@ -351,6 +382,8 @@ uv run main.py                # 完整运行并发信
 uv run main.py --out x.html   # 指定 HTML 输出路径
 uv run main.py --now          # 窗口 = 最近 24h；定时任务默认用这个模式
 uv run main.py --ignore-seen  # 忽略最近 3 天推送过的条目，不写 state
+uv run main.py --force        # 今天已发过也强制重发
+uv run heartbeat.py           # 手动跑心跳检查（当天未发送则发告警邮件）
 
 # ---- Git ----
 git status -sb                # 看是否 ahead（未推送）

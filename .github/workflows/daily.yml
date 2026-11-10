@@ -2,13 +2,18 @@ name: daily-digest
 
 on:
   schedule:
-    # UTC 00:05 = 北京时间 08:05。
-    # Actions 的 cron 通常会延迟 5~20 分钟触发，所以提前 25 分钟：
-    # 整条链路约 3 分钟，跑完仍能赶在 08:30 前发出。
-    # 运行命令带 --now，统计窗口是「最近 24h」，不依赖 08:30 这个固定锚点；
-    # 实际窗口起点会随触发时间漂移，靠 state.json 去重避免重复推送。
-    - cron: '5 0 * * *'
-  workflow_dispatch: {}   # 支持手动触发
+    # 主任务：UTC 00:17 = 北京 08:17。避开 UTC 整点（00:00）的调度高峰，
+    # 但 GitHub 的 schedule 仍是 best-effort，可能延迟数小时甚至被直接丢弃。
+    # 兜底：UTC 00:40 = 北京 08:40。主任务没跑成时由它补发；
+    # main.py 用 state.json 的 last_sent_date 保证同一天只发一封。
+    - cron: '17 0 * * *'
+    - cron: '40 0 * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: '今天已发过也强制重发（忽略 last_sent_date 检查）'
+        type: boolean
+        default: false
 
 permissions:
   contents: write         # 用于把 state.json 提交回仓库
@@ -68,7 +73,12 @@ jobs:
           MAIL_FROM:          ${{ secrets.MAIL_FROM }}
           MAIL_TO:            ${{ secrets.MAIL_TO }}
           GITHUB_TOKEN:       ${{ secrets.GITHUB_TOKEN }}
-        run: uv run main.py --now
+        run: |
+          ARGS="--now"
+          if [ "${{ inputs.force }}" = "true" ]; then
+            ARGS="$ARGS --force"
+          fi
+          uv run main.py $ARGS
 
       - name: Persist state
         run: |

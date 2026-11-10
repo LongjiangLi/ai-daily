@@ -21,10 +21,11 @@ src/llm.py              LLM 封装 + token 计费统计
 src/extractors.py       三段式抽取（打分 / 本地模型 / 前沿影响 / 通用）
 src/render.py           Jinja2 渲染
 src/mailer.py           SMTP 发信
-src/state.py            去重状态
+src/state.py            去重状态（含 last_sent_date：当天只发一封）
+heartbeat.py            08:45 心跳检查：当天没发出去就发告警邮件
 prompts/                5 个 prompt 模板
 templates/daily.html.j2 邮件模板
-.github/workflows/      定时任务
+.github/workflows/      定时任务（daily.yml + heartbeat.yml）
 ```
 
 ## 本地运行
@@ -51,6 +52,7 @@ uv run main.py
 |---|---|
 | `--now` | 窗口改成「最近 24h 到当前时刻」。定时任务默认就用这个模式；下午手动跑也不会被固定上界截断 |
 | `--ignore-seen` | 忽略 `state.json` 里最近 3 天推送过的条目，看"全新一天"的完整候选 |
+| `--force` | 忽略 `last_sent_date`，即使今天已经发过也再发一封（手动 Run workflow 时勾选 `force`） |
 
 例如白天反复调试：`uv run main.py --now --no-mail --ignore-seen`。
 注意：`--no-mail` / `--dry-run` 本来就不会写 state，`--ignore-seen` 额外保证即使发信也不写。
@@ -79,13 +81,16 @@ QQ 邮箱授权码：设置 → 账户 → 开启「POP3/SMTP 服务」→ 生�
 1. 新建**私有**仓库，把本目录推上去（`.env` 已在 `.gitignore` 里，不会被提交）
 2. 仓库 Settings → Secrets and variables → Actions，逐个添加 `.env` 里的变量
 3. Actions 页面手动触发一次 `daily-digest` 验证
-4. 之后每天 UTC 00:05（北京 08:05）自动运行，整条链路约 3 分钟；
-   算上 Actions 的触发延迟，邮件通常 **08:10–08:25** 到达
+4. 之后每天自动运行两次：**UTC 00:17（北京 08:17）主任务**，
+   **UTC 00:40（北京 08:40）兜底任务**；`state.json` 的 `last_sent_date`
+   保证同一天只发一封。整条链路约 3 分钟，邮件通常在 **08:20–08:45** 到达。
+   另有一个 **08:45 心跳任务**：当天仍无发送记录时发告警邮件。
 
-> 为什么 cron 不写 08:30：Actions 的定时任务会延迟 5–20 分钟才启动，
-> 掐点触发必然晚于 08:30。所以提前到 08:05，并用 `--now` 让窗口变成
-> 「最近 24h」。换算规则：`cron` 用 UTC，北京时间减 8 小时。
-> 8:05 → `5 0 * * *`。`config.yaml` 的 `push_time` 只影响手动运行的窗口锚点。
+> 为什么不用整点：GitHub Actions 的 `schedule` 是 best-effort，
+> **UTC 整点（00:00）是调度最拥堵的时段**，任务可能延迟数小时甚至被静默丢弃
+> （不会留下失败记录）。所以把主任务挪到 00:17，再用 00:40 的兜底 cron 补位。
+> 换算规则：`cron` 用 UTC，北京时间减 8 小时。
+> `config.yaml` 的 `push_time` 只影响手动运行的窗口锚点。
 
 **关于 60 天休眠**：GitHub 会禁用长期无提交仓库的定时任务。本项目的 workflow 每天会把 `state.json` 提交回仓库，因此不会休眠，不需要额外的 keepalive。
 
@@ -188,7 +193,7 @@ Windows 上 `zoneinfo` 需要 `tzdata`（已写进 pyproject），否则会报
 
 ## 已知问题
 
-- GitHub Actions 的 cron 有 5–20 分钟延迟，这是平台特性，无法消除；调度已提前到 08:05 来吸收这部分延迟
+- GitHub Actions 的 `schedule` 是 best-effort：可能延迟几分钟到数小时，甚至被静默丢弃（没有失败记录）。本项目用「主任务 08:17 + 兜底 08:40 + 当天只发一封 + 08:45 心跳告警」来降低影响；要严格卡点需改用外部定时器调用 `workflow_dispatch`
 - 滚动 24h 窗口下，如果某天触发时间比前一天早，两天窗口之间可能有几分钟重叠；已推送条目靠 `state.json` 去重，不会重复出现
 - 部分 RSS 地址可能失效，运行日志里会有 `[rss] 拉取失败 <url>`，改 `config.yaml` 即可
 - 显存/速度数据依赖模型 README，缺失时会显示「需实测」而不是编造
