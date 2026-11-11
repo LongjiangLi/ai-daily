@@ -1,5 +1,7 @@
 name: digest-heartbeat
 
+# 依赖 schedule，与 daily.yml 一样要求仓库为 public（详见 daily.yml 顶部说明）。
+
 on:
   schedule:
     # UTC 00:45 = 北京 08:45。主/兜底任务都应在 08:40 前跑完；

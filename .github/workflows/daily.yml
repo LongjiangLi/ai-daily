@@ -1,5 +1,10 @@
 name: daily-digest
 
+# 注意：GitHub 的 schedule 只在「public 仓库」上稳定注册和触发。
+# 本仓库 2026-11-11 之前是 private（个人免费账号），schedule 从未产生过
+# 任何运行记录（event=schedule 长期为 0），只有 workflow_dispatch 能用。
+# 因此仓库已转为 public；若以后改回 private，定时任务会再次失效。
+
 on:
   schedule:
     # 主任务：UTC 00:17 = 北京 08:17。避开 UTC 整点（00:00）的调度高峰，
