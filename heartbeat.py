@@ -1,6 +1,9 @@
 """发送心跳告警：到点检查今天是否已经发出过日报。
 
-由 .github/workflows/heartbeat.yml 在 UTC 00:45（北京 08:45）调用。
+由 .github/workflows/heartbeat.yml 在 UTC 19:05（北京 03:05）排队调用。
+按 2026-11 实测的 6h20m ~ 7h03m 调度延迟，实际大约在 09:24-10:10 运行；
+早于 --earliest（09:30）时直接退出，避免延迟消失或日报还没到时发假告警。
+
 GitHub 的 schedule 是 best-effort，任务可能延迟数小时甚至被静默丢弃，
 被丢弃时 Actions 里不会留下任何失败记录，所以只能靠外部时间点兜底检查。
 
@@ -11,6 +14,7 @@ GitHub 的 schedule 是 best-effort，任务可能延迟数小时甚至被静默
 
 from __future__ import annotations
 
+import argparse
 import os
 import subprocess
 import sys
@@ -18,7 +22,7 @@ import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from src.config import load_config
+from src.config import load_config, parse_push_time
 from src.mailer import send_mail
 from src.state import load_state
 
@@ -53,9 +57,30 @@ def main() -> None:
     except Exception:
         pass
 
+    parser = argparse.ArgumentParser(description="AI 日报心跳检查")
+    parser.add_argument(
+        "--earliest",
+        default=None,
+        metavar="HH:MM",
+        help="早于该时刻（配置时区）不检查也不告警，直接退出",
+    )
+    args = parser.parse_args()
+
     cfg = load_config()
     tz = ZoneInfo(cfg.get("timezone", "Asia/Shanghai"))
-    today = datetime.now(tz).strftime("%Y-%m-%d")
+    now = datetime.now(tz)
+
+    # 与 daily.yml 的 --earliest 同一个道理：cron 是提前量，延迟消失时可能凌晨
+    # 就跑起来，此时日报本来就不该发，更不能发「未发出」的假告警。
+    if args.earliest:
+        hh, mm = parse_push_time(args.earliest)
+        earliest = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+        if now < earliest:
+            _log(f"[heartbeat] 当前 {now:%H:%M} 早于 {args.earliest}，"
+                 f"不检查（定时任务仍在补偿窗口内）")
+            return
+
+    today = now.strftime("%Y-%m-%d")
 
     wait_seconds = int(os.getenv("HEARTBEAT_WAIT_SECONDS", "600"))
     poll_seconds = int(os.getenv("HEARTBEAT_POLL_SECONDS", "60"))

@@ -4,19 +4,26 @@ name: daily-digest
 # 本仓库 2026-11-11 之前是 private（个人免费账号），schedule 从未产生过
 # 任何运行记录（event=schedule 长期为 0），只有 workflow_dispatch 能用。
 # 因此仓库已转为 public；若以后改回 private，定时任务会再次失效。
+#
+# 触发延迟（2026-11 实测）：cron 到实际运行稳定晚 6h20m ~ 7h03m，且每天都在变。
+# 所以 cron 不再是「08:17 的闹钟」，而是「提前量」：
+#   1. 在北京 01:20-08:20 每小时排一档（共 8 档/天），按实测延迟，
+#      实际落地在 08:20-09:20；哪一档落到 08:20 之后，就由哪一档发信；
+#   2. main.py 的 --earliest 08:20 兜住「延迟突然消失」：到得太早直接退出，
+#      不会凌晨发信，把机会留给后面的档位；
+#   3. state.json 的 last_sent_date 保证同一天只发一封。
 
 on:
   schedule:
-    # 主任务：UTC 00:17 = 北京 08:17。避开 UTC 整点（00:00）的调度高峰，
-    # 但 GitHub 的 schedule 仍是 best-effort，可能延迟数小时甚至被直接丢弃。
-    # 兜底：UTC 00:40 = 北京 08:40。主任务没跑成时由它补发；
-    # main.py 用 state.json 的 last_sent_date 保证同一天只发一封。
-    - cron: '17 0 * * *'
-    - cron: '40 0 * * *'
+    # 北京 01:20-07:20 每小时一档。错开整点（:20）是为了让实测的
+    # 6h19-7h03 延迟尽量贴近 08:30：7h03 → 08:23，6h19 → 08:39。
+    - cron: '20 17-23 * * *'
+    # 北京 08:20：延迟为 0 或很小时走这一档。
+    - cron: '20 0 * * *'
   workflow_dispatch:
     inputs:
       force:
-        description: '今天已发过也强制重发（忽略 last_sent_date 检查）'
+        description: '今天已发过也强制重发（忽略 last_sent_date 与最早时间检查）'
         type: boolean
         default: false
 
@@ -34,6 +41,15 @@ jobs:
 
     steps:
       - uses: actions/checkout@v5
+
+      # 多个档位可能同时落到 08:20 之后。run 的 SHA 是入队时解析的，可能落后于
+      # 前一个 run 刚提交的 state.json；先同步到最新 main，确保 last_sent_date
+      # 检查看到的是最新状态，避免并发重复发信。
+      - name: Sync with latest main
+        if: github.ref == 'refs/heads/main'
+        run: |
+          git fetch --quiet origin +refs/heads/main:refs/remotes/origin/main
+          git reset --hard --quiet origin/main
 
       - name: Install uv
         uses: astral-sh/setup-uv@v6
@@ -80,6 +96,11 @@ jobs:
           GITHUB_TOKEN:       ${{ secrets.GITHUB_TOKEN }}
         run: |
           ARGS="--now"
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            # 兜底闸门：早于北京时间 08:20 不发，等后面的 cron 档位。
+            # 手动 Run workflow 不受限制（想提前发时直接触发即可）。
+            ARGS="$ARGS --earliest 08:20"
+          fi
           if [ "${{ inputs.force }}" = "true" ]; then
             ARGS="$ARGS --force"
           fi

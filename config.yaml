@@ -1,12 +1,14 @@
 # ================= 时间与窗口 =================
 timezone: Asia/Shanghai
-# 计划任务的 cron 在 .github/workflows/daily.yml：
-#   主任务 UTC 00:17 = 北京 08:17；兜底 UTC 00:40 = 北京 08:40。
+# 计划任务的 cron 在 .github/workflows/daily.yml：北京 01:20-08:20 每小时
+# 排一档「提前量」（8 档/天），用来吸收 GitHub 0~7.3h 的调度延迟。实际发信
+# 时间由 main.py --earliest 08:20 把关：哪一档落到 08:20 之后，就由哪一档发送。
+# 实测 6h19-7h03 的延迟下约 08:23-08:39 到达；延迟落在中间值时最晚约 09:20。
 # 定时任务用 --now 运行，统计窗口 = 最近 24h（截止到实际触发时刻），
 # 这样 Actions 的触发延迟不会造成漏采；重复条目靠 state.json 去重，
 # 同一天重复触发靠 state.json 的 last_sent_date 跳过（--force 可强制重发）。
 # 下面的 push_time 只影响「手动运行且不带 --now」时的窗口锚点。
-push_time: "08:17"
+push_time: "08:20"
 
 # ================= LLM =================
 llm:

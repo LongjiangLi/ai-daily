@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 
 from src.collectors import collect_all
-from src.config import PROJECT_ROOT, compute_window, load_config
+from src.config import PROJECT_ROOT, compute_window, load_config, parse_push_time
 from src.extractors import (
     extract_frontier,
     extract_general,
@@ -98,14 +98,26 @@ async def run_async(args: argparse.Namespace) -> None:
     state = load_state()
     selected = None
 
-    # 当天已发送则直接退出：主 cron 与兜底 cron 可能都触发，
-    # 被延迟的主任务也可能在兜底任务之后才启动，靠这个标记避免重复邮件。
+    # 当天已发送则直接退出：cron 排了一整组档位，多个档位可能先后触发，
+    # 靠这个标记避免重复邮件。
     # dry-run / --no-mail / --force 不参与该检查。
     if (not args.dry_run and not args.no_mail and not args.force
             and state.get("last_sent_date") == date_str):
         _log(f"    {date_str} 的日报已发送过"
              f"（{state.get('last_sent_at', '时间未知')}），跳过；--force 可强制重发")
         return
+
+    # 定时任务的兜底闸门：cron 排了一整组「提前量」档位，如果某天延迟突然消失，
+    # 靠前的档位会在凌晨触发。早于 --earliest 时直接退出且不写 state，
+    # 把发信机会留给当天后面的档位。--force 可绕过（手动补发/调试用）。
+    if args.earliest and not args.force:
+        hh, mm = parse_push_time(args.earliest)
+        now = datetime.now(end.tzinfo)
+        earliest = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+        if now < earliest:
+            _log(f"    当前 {now:%H:%M} 早于最早发送时间 {args.earliest}，"
+                 f"本次不发送（等待后续定时触发）")
+            return
 
     _log("① 采集")
     _t = time.perf_counter()
@@ -198,7 +210,7 @@ async def run_async(args: argparse.Namespace) -> None:
     subject = f"AI 日报 · {report['date']}（{report['weekday']}）"
     send_mail(subject, html, plain)
 
-    # 记录「今天已发」：兜底 cron / 手动补发靠它判断是否还要再发一封。
+    # 记录「今天已发」：后续 cron 档位 / 手动补发靠它判断是否还要再发一封。
     # end.tzinfo 就是 config 里配置的时区（默认 Asia/Shanghai）。
     state["last_sent_date"] = date_str
     state["last_sent_at"] = datetime.now(end.tzinfo).isoformat(timespec="seconds")
@@ -239,7 +251,13 @@ def main() -> None:
     parser.add_argument(
         "--force",
         action="store_true",
-        help="即使 state.json 记录今天已发送过，也强制再发一封",
+        help="即使 state.json 记录今天已发送过，也强制再发一封；同时忽略 --earliest",
+    )
+    parser.add_argument(
+        "--earliest",
+        default=None,
+        metavar="HH:MM",
+        help="早于该时刻（配置时区）不发信，直接退出，等下一次定时触发",
     )
     parser.add_argument("--out", default=str(PROJECT_ROOT / "preview.html"), help="HTML 输出路径")
     args = parser.parse_args()

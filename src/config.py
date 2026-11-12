@@ -31,9 +31,9 @@ def parse_push_time(value: str) -> tuple[int, int]:
         hh, mm = value.strip().split(":")
         hh_i, mm_i = int(hh), int(mm)
     except (ValueError, AttributeError) as exc:
-        raise ValueError(f"push_time 格式应为 HH:MM，实际是 {value!r}") from exc
+        raise ValueError(f"时间格式应为 HH:MM，实际是 {value!r}") from exc
     if not (0 <= hh_i <= 23 and 0 <= mm_i <= 59):
-        raise ValueError(f"push_time 超出范围: {value}")
+        raise ValueError(f"时间超出范围: {value}")
     return hh_i, mm_i
 
 

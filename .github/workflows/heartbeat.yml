@@ -4,9 +4,10 @@ name: digest-heartbeat
 
 on:
   schedule:
-    # UTC 00:45 = 北京 08:45。主/兜底任务都应在 08:40 前跑完；
-    # 这里再等 10 分钟（心跳脚本内部轮询），仍无发送记录才发告警邮件。
-    - cron: '45 0 * * *'
+    # 北京 03:05 排队。按 2026-11 实测的 6h20m ~ 7h03m 调度延迟，
+    # 实际大约 09:24-10:10 运行；日报的小时档此时应已发出（最晚约 09:20）。
+    # 脚本内 --earliest 09:30 保证延迟消失或日报还没到时不会发假告警。
+    - cron: '5 19 * * *'
   workflow_dispatch: {}
 
 permissions:
@@ -42,4 +43,10 @@ jobs:
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
           MAIL_FROM: ${{ secrets.MAIL_FROM }}
           MAIL_TO:   ${{ secrets.MAIL_TO }}
-        run: uv run heartbeat.py
+        run: |
+          ARGS=""
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            # 延迟消失时不要在凌晨发假告警；手动触发时不做限制。
+            ARGS="--earliest 09:30"
+          fi
+          uv run heartbeat.py $ARGS
