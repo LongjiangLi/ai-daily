@@ -1,6 +1,8 @@
 .env
 .dev.vars
 .wrangler/
+# 本地运维文档，不推送
+ops/
 __pycache__/
 *.py[cod]
 .venv/
