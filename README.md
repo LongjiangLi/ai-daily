@@ -22,10 +22,11 @@ src/extractors.py       三段式抽取（打分 / 本地模型 / 前沿影响 /
 src/render.py           Jinja2 渲染
 src/mailer.py           SMTP 发信
 src/state.py            去重状态（含 last_sent_date：当天只发一封）
-heartbeat.py            心跳检查（延迟补偿后约 09:24-10:10）：当天没发出去就发告警邮件
+heartbeat.py            心跳检查（每天 09:33）：当天没发出去就发告警邮件
+cloudflare/             外部定时器（Worker 调 workflow_dispatch，主触发）
 prompts/                5 个 prompt 模板
 templates/daily.html.j2 邮件模板
-.github/workflows/      定时任务（daily.yml + heartbeat.yml）
+.github/workflows/      定时任务（daily.yml + heartbeat.yml，含兜底 cron）
 ```
 
 ## 本地运行
@@ -82,19 +83,24 @@ QQ 邮箱授权码：设置 → 账户 → 开启「POP3/SMTP 服务」→ 生�
    GitHub 的 `schedule` 在个人免费账号的 private 仓库上不会稳定注册，必须 public
 2. 仓库 Settings → Secrets and variables → Actions，逐个添加 `.env` 里的变量
 3. Actions 页面手动触发一次 `daily-digest` 验证
-4. 之后每天由一组 cron 触发：**北京 01:20–08:20 每小时一档**（8 档/天），用来
-   吸收 GitHub 0–7.3 小时的调度延迟；`main.py --earliest 08:20` 保证不会早于
-   08:20 发信，`state.json` 的 `last_sent_date` 保证同一天只发一封。实测的
-   6h19–7h03 延迟下，邮件约 **08:23–08:39** 到达；延迟落在中间值时最晚约
-   09:20。另有心跳任务：延迟补偿后约 09:24–10:10 检查，当天仍无发送记录时
-   发告警邮件。
+4. 配置外部定时（**主触发**）：按 [cloudflare/README.md](cloudflare/README.md)
+   部署一个 Cloudflare Worker，由它的 Cron Trigger 在北京 **08:27**（刻意错开
+   `:00`/`:30` 的调度高峰）调用本仓库的 `workflow_dispatch`。
+   `workflow_dispatch` 不经过 GitHub 的定时队列，邮件约 **08:30–08:33** 到达。
+5. **兜底**：`daily.yml` 仍保留 1 档 GitHub `schedule`（北京 08:36，同样错开）。
+   GitHub 的 `schedule` 延迟实测 5h–7h 且可能被静默丢弃，所以它通常下午才跑；
+   Worker 正常时它只会读到「今天已发」然后秒退，Worker 失效时由它补发。两道
+   触发都靠 `state.json` 的 `last_sent_date` 保证同一天只发一封。
+6. 心跳任务由 Worker 在北京 **09:33** 触发，当天仍无发送记录时发告警邮件。
 
-> 为什么错开整点：GitHub Actions 的 `schedule` 是 best-effort。本项目 2026-11
-> 实测：cron 到实际运行稳定晚 **6h20m–7h03m**，且每天不同。所以 cron 只当
-> 「提前量」，真正的准时由程序里的 `--earliest 08:20` 闸门控制：到得太早就退出，
-> 等后面的档位。每档分钟错开到 `:20`，是为了让实测延迟落在 08:23–08:39。
-> 换算规则：`cron` 用 UTC，北京时间减 8 小时。`config.yaml` 的 `push_time`
-> 只影响手动运行的窗口锚点。
+> 为什么不用 GitHub 的 cron 卡点：GitHub Actions 的 `schedule` 是 best-effort。
+> 本项目 2026-11 实测：cron 到实际运行晚 **5h24m–7h03m**，且每天不同；高负载时
+> 排队任务还可能被直接丢弃，连失败记录都没有。所以准时性交给外部定时器：
+> Cloudflare Workers 的 Cron Trigger 免费，通常在计划时间后几秒到几分钟内触发
+> （远小于 GitHub 的小时级延迟），用一个十几行的 Worker 调 `workflow_dispatch`
+> 即可。
+> 换算规则：Cloudflare / GitHub 的 `cron` 都用 UTC，北京时间减 8 小时。
+> `config.yaml` 的 `push_time` 只影响手动运行的窗口锚点，建议与目标时间一致。
 
 **关于 60 天休眠**：GitHub 会禁用长期无提交仓库的定时任务。本项目的 workflow 每天会把 `state.json` 提交回仓库，因此不会休眠，不需要额外的 keepalive。
 
@@ -197,7 +203,7 @@ Windows 上 `zoneinfo` 需要 `tzdata`（已写进 pyproject），否则会报
 
 ## 已知问题
 
-- GitHub Actions 的 `schedule` 是 best-effort：可能延迟几分钟到数小时，甚至被静默丢弃（没有失败记录）。本项目用「北京 01:20–08:20 每小时一档 cron + `--earliest 08:20` 闸门 + 当天只发一封 + 09:30 后心跳告警」，实测延迟下邮件约 08:23–08:39 到达（最晚约 09:20）；要严格卡点需改用外部定时器调用 `workflow_dispatch`
+- GitHub Actions 的 `schedule` 是 best-effort：可能延迟几分钟到数小时，甚至被静默丢弃（没有失败记录）。本项目用「Cloudflare Worker 定时调 `workflow_dispatch`（北京 08:27）+ GitHub cron 兜底 + `last_sent_date` 去重 + 09:33 心跳告警」，正常情况下邮件约 08:30–08:33 到达；Worker / PAT 失效时由兜底 cron 在下午补发
 - 滚动 24h 窗口下，如果某天触发时间比前一天早，两天窗口之间可能有几分钟重叠；已推送条目靠 `state.json` 去重，不会重复出现
 - 部分 RSS 地址可能失效，运行日志里会有 `[rss] 拉取失败 <url>`，改 `config.yaml` 即可
 - 显存/速度数据依赖模型 README，缺失时会显示「需实测」而不是编造

@@ -1,13 +1,17 @@
 name: digest-heartbeat
 
-# 依赖 schedule，与 daily.yml 一样要求仓库为 public（详见 daily.yml 顶部说明）。
+# 主触发：Cloudflare Worker 的 Cron Trigger（北京 09:33，错开 :00/:30）调用
+#         workflow_dispatch，见 cloudflare/README.md；dispatch 秒级启动，检查时机是准的。
+# 兜底：保留 1 档 GitHub schedule（北京 03:23 排队，实测延迟 5-7 小时后约
+#       08:23-10:23 运行）。脚本内 --earliest 09:30 会让它早到时直接退出，所以
+#       延迟短的日子这档什么都不做——那是正常的，主触发由 Worker 保证。
+# 依赖 schedule 的兜底档要求仓库为 public（详见 daily.yml 顶部说明）。
 
 on:
   schedule:
-    # 北京 03:05 排队。按 2026-11 实测的 6h20m ~ 7h03m 调度延迟，
-    # 实际大约 09:24-10:10 运行；日报的小时档此时应已发出（最晚约 09:20）。
-    # 脚本内 --earliest 09:30 保证延迟消失或日报还没到时不会发假告警。
-    - cron: '5 19 * * *'
+    # 北京 03:23 排队（UTC 19:23）。实测延迟 5h-7h，约 08:23-10:23 运行。
+    # 分钟避开 :00 / :30，减少调度高峰的竞争。
+    - cron: '23 19 * * *'
   workflow_dispatch: {}
 
 permissions:

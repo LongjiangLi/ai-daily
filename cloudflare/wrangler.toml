@@ -1,0 +1,21 @@
+name = "ai-daily-trigger"
+main = "worker.js"
+compatibility_date = "2026-11-01"
+
+# 只放非敏感信息。GITHUB_TOKEN 用 `wrangler secret put GITHUB_TOKEN` 写入。
+[vars]
+GH_OWNER = "LongjiangLi"
+GH_REPO = "ai-daily"
+GH_REF = "main"
+
+[triggers]
+# Cloudflare 的 cron 一律是 UTC；北京时间 = UTC + 8
+# 分钟刻意避开 :00 / :30，减少定时调度高峰的竞争
+crons = [
+  "27 0 * * *", # 北京 08:27 → daily.yml（发日报，约 08:30-08:33 到信）
+  "33 1 * * *", # 北京 09:33 → heartbeat.yml（检查是否漏发）
+]
+
+# 在 Cloudflare 控制台能看到每次 cron 的日志与成功/失败
+[observability]
+enabled = true

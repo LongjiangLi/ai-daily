@@ -12,13 +12,13 @@
 | 本地路径 | `E:\pythonProject\ai-daily` |
 | 仓库 | https://github.com/LongjiangLi/ai-daily |
 | 默认分支 | `main` |
-| 触发时间 | cron 在北京 **01:20–08:20** 每小时排一档；`--earliest 08:20` 闸门保证实测延迟下邮件 **08:23–08:39** 到达（最晚约 09:20） |
-| cron | `20 17-23 * * *` + `20 0 * * *`（UTC） |
-| 心跳告警 | 延迟补偿后约 **09:24–10:10** 检查当天是否已发送，没有则发告警邮件 |
+| 触发时间 | Cloudflare Worker 的 Cron Trigger 在北京 **08:27**（错开 `:00`/`:30`）调 `workflow_dispatch`；邮件约 **08:30–08:33** 到达 |
+| 兜底 cron | `36 0 * * *`（UTC，北京 08:36）；GitHub 调度延迟 5–7h，通常下午才跑 |
+| 心跳告警 | Worker 在北京 **09:33** 触发 `digest-heartbeat`；当天没有发送记录则发告警邮件 |
 | 统计窗口 | 最近 24h（运行时带 `--now`，截止到实际触发时刻） |
 | 运行时 | GitHub Actions / ubuntu-latest |
 | 单次耗时 | 约 3 分钟（首次约 5 分钟） |
-| 用量 | public 仓库的 standard runner 免费；约 8 档/天，闸门前触发的档位几秒即退出 |
+| 用量 | public 仓库的 standard runner 免费；约 1 次主触发 + 1 次兜底/天，兜底读到「今天已发」几秒即退出；Cloudflare Worker 免费计划即可 |
 | LLM 成本 | 约 ¥0.1/天，¥3/月 |
 
 ---
@@ -26,7 +26,7 @@
 ## 1. 架构速览
 
 ```
-GitHub Actions (cron 17 0 / 40 0 * * *, 运行 main.py --now)
+Cloudflare Worker (cron 北京 08:27) ──workflow_dispatch──▶ GitHub Actions (main.py --now)
         │
         ├─① 采集   GitHub / HuggingFace / arXiv / HN / RSS（并发）
         ├─② 粗筛   去重 → 时间窗 → 关键词过滤 → 截断
@@ -57,11 +57,12 @@ ai-daily/
 │   ├── state.py            去重状态
 │   ├── models.py           数据模型 + 来源标签
 │   └── config.py           配置加载 + 时间窗计算
-├── heartbeat.py            心跳检查（延迟补偿后约 09:24-10:10，当天未发送则告警）
+├── heartbeat.py            心跳检查（每天 09:33，当天未发送则告警）
+├── cloudflare/             外部定时器（Worker 调 workflow_dispatch，主触发）
 ├── prompts/                5 个 prompt 模板
 ├── templates/daily.html.j2 邮件模板
-├── .github/workflows/daily.yml      主任务 + 兜底任务
-└── .github/workflows/heartbeat.yml  心跳告警
+├── .github/workflows/daily.yml      日报（Worker 主触发 + 1 档 cron 兜底）
+└── .github/workflows/heartbeat.yml  心跳告警（Worker 主触发 + 1 档 cron 兜底）
 ```
 
 ---
@@ -97,7 +98,7 @@ Settings → Project: ai-daily → Python Interpreter
 | 配置 | 当前值 | 说明 |
 |---|---|---|
 | `timezone` | `Asia/Shanghai` | 时区 |
-| `push_time` | `"08:20"` | 只影响**手动运行**（不带 `--now`）时的窗口锚点；定时任务用 `--now`，窗口是最近 24h |
+| `push_time` | `"08:30"` | 只影响**手动运行**（不带 `--now`）时的窗口锚点；定时任务用 `--now`，窗口是最近 24h |
 | `llm.temperature` | `0` | 降低输出随机性 |
 | `llm.model` | `deepseek-chat` | 批量打分/抽取 |
 | `llm.reasoning_model` | `deepseek-reasoner` | 仅前沿影响分析 |
@@ -200,13 +201,48 @@ git push -u origin main
 
 ## 6. 定时任务
 
+### 6.1 结构
+
+```
+Cloudflare Worker (Cron Trigger)            GitHub Actions
+  27 0 * * * UTC（北京 08:27）──────────▶ daily.yml      → main.py --now → 发信
+  33 1 * * * UTC（北京 09:33）──────────▶ heartbeat.yml  → 检查 state.json
+
+daily.yml 的 GitHub schedule（北京 08:36）      ＝ 兜底，Worker 正常时秒退
+heartbeat.yml 的 GitHub schedule（北京 03:23 排队）＝ 兜底
+```
+
+Worker 代码与部署步骤见 [`cloudflare/README.md`](cloudflare/README.md)。
+
+### 6.2 为什么不用 GitHub cron 卡点
+
+- GitHub 的 `schedule` 是 best-effort，官方文档明确写了高负载时会延迟，负载过高
+  时排队的 job 会被**直接丢弃**——不产生 failed run，Actions 里查不到任何记录
+- 2026-11 实测：cron 到实际运行晚 **5h24m–7h03m**（11-11 为 6h19m / 6h28m，
+  11-12 为 7h03m / 7h03m，11-13 为 5h24m），而且每天都在变
+- 2026-11-13 事故：01:20 那档在 06:44 落地（延迟 5h24m），被 `--earliest 08:20`
+  闸门拦下属设计内；但当天其余 7 档一个都没被调度出来，最终没有发信。说明
+  「多档提前量」依赖「每一档都会被调度」这个不成立的前提
+- 结论：准时性交给 Cloudflare Worker 调 `workflow_dispatch`，GitHub cron 只做兜底
+- **分钟避开 `:00` / `:30`**：这两个整点是绝大多数定时任务的落点（GitHub 自己也
+  提示「start of every hour」负载最高）。主触发、兜底 cron、心跳全部使用偏门分钟
+
+### 6.3 主触发：Cloudflare Worker
+
+- 两个 Cron Trigger：北京 **08:27** → `daily.yml`，北京 **09:33** → `heartbeat.yml`
+  （分钟刻意避开 `:00`/`:30`；单次运行约 3 分钟，所以邮件约 08:30–08:33 到）
+- Cloudflare 的 cron 一律用 UTC（北京时间 − 8）
+- 需要 Worker Secret `GITHUB_TOKEN`：fine-grained PAT，仓库 `LongjiangLi/ai-daily`，
+  权限 **Actions: Read and write**，按需设置有效期；到期后 Worker 日志报 401，
+  重新 `wrangler secret put GITHUB_TOKEN` 即可
+- PAT 失效期间日报由兜底 cron 在下午补发，不会丢
+
+### 6.4 兜底 cron（只保留 1 档）
+
 ```yaml
 on:
   schedule:
-    # 北京 01:20-07:20 每小时一档（共 8 档/天），错开整点让实测延迟贴近 08:30
-    - cron: '20 17-23 * * *'
-    # 北京 08:20：延迟很小或为 0 时兜底
-    - cron: '20 0 * * *'
+    - cron: '36 0 * * *'   # 北京 08:36（错开 :00/:30）
   workflow_dispatch:
     inputs:
       force:
@@ -215,45 +251,43 @@ on:
         default: false
 ```
 
-### 关键事实
+- Worker 正常时：08:27 的 run 已把 `last_sent_date` 写成今天，08:36 的兜底 run
+  在采集前秒退（日志：`…的日报已发送过…跳过`）
+- Worker 失效时：兜底 run 按 GitHub 的延迟（5–7h）在下午发信
+- `--earliest 08:30` 只作用于 `schedule` 事件：即使 cron 被改早或延迟消失，
+  也不会凌晨发信；`workflow_dispatch`（Worker / 手动）不受此限制
 
-- **不是常驻进程**：到点启动临时 runner，跑完销毁，两次触发间不占资源
-- **cron 是 best-effort，不是准时保证**：GitHub 官方文档明确写了，高负载时任务会
-  延迟，负载过高时排队的 job 会被**直接丢弃**——不会产生 failed run，Actions 里
-  也查不到任何记录
-- **2026-11 实测延迟**：cron 到实际运行稳定晚 **6h20m ~ 7h03m**（11-11 为
-  6h19m / 6h28m，11-12 为 7h03m / 7h03m），而且每天都在变。所以 cron 不设成
-  「08:17 的闹钟」，而是排一组**提前量档位**：北京 01:20-08:20 每小时一档
-  （8 档/天）。错开整点（`:20`）是为了让 6h19-7h03 这段延迟落在 08:23-08:39
-- **`--earliest 08:20` 闸门**：哪一档实际落到 08:20 之后，就由哪一档发信；
-  如果某天延迟突然消失，凌晨触发的档位会在采集前直接退出（日志：
-  `当前 01:20 早于最早发送时间 08:20，本次不发送`），不会凌晨发信。
-  小时档的代价：延迟落在两个整点之间时，最晚约 09:20 才到
+### 6.5 去重与并发
+
 - **去重**：`main.py` 发信成功后把 `last_sent_date` 写进 `state.json`，同一天
   再次触发会在采集前直接退出（日志：`2026-11-10 的日报已发送过…跳过`）
-- **不会并发**：`concurrency` 已配置；run 启动后会先 `git reset --hard origin/main`
-  同步最新 state，避免多个档位同时落地时读到旧状态而重复发信
-- **心跳告警**：`heartbeat.yml` 在北京 03:05 排队（按实测延迟约 09:24-10:10 运行），
-  检查 `last_sent_date`；若仍不是今天，则发一封 `⚠️ AI 日报可能未发出` 的告警邮件。
-  脚本内 `--earliest 09:30` 保证延迟消失或日报尚未到时不会发假告警；确认缺记录后
-  会先轮询 10 分钟，给仍在延迟中的日报档位留缓冲
-- **60 天无提交会被禁用**：本 workflow 每天提交 `state.json` 保活，正常不会触发
-  - 若连续 60 天全失败（如 Secret 失效导致跑不到 persist 步骤），仍可能被禁用
+- **不会并发**：`concurrency: daily-digest` 串行化同一 workflow 的 run；run 启动
+  后会先 `git reset --hard origin/main` 同步最新 state，避免 Worker 与兜底 cron
+  先后触发时读到旧状态而重复发信
 
-### 改到达时间
+### 6.6 心跳告警
+
+- 主触发：Worker 北京 09:33 调 `heartbeat.yml`；兜底：GitHub cron 北京 03:23
+  排队（延迟 5–7h → 约 08:23–10:23 运行）
+- 检查 `state.json` 的 `last_sent_date`；若仍不是今天，发一封
+  `⚠️ AI 日报可能未发出` 的告警邮件
+- 脚本内 `--earliest 09:30`：兜底档早到就直接退出（延迟短的日子它不检查，
+  由 Worker 档保证）；确认缺记录后会先轮询 10 分钟，给仍在延迟中的兜底日报留缓冲
+- **60 天无提交会被禁用**：日报 workflow 每天提交 `state.json` 保活；若连续 60 天
+  全失败（如 Secret 失效），仍可能被禁用
+
+### 6.7 改到达时间
 
 | 文件 | 改什么 |
 |---|---|
-| `.github/workflows/daily.yml` | 两行 `cron:` 的小时范围与分钟（提前量窗口） |
-| `.github/workflows/daily.yml` | Run digest 步骤里的 `--earliest 08:20` |
-| `.github/workflows/heartbeat.yml` | 心跳 `cron:` 与 `--earliest 09:30` |
-| `config.yaml` | `push_time`（只影响手动运行，建议与 `--earliest` 保持一致便于对照） |
+| `cloudflare/wrangler.toml` | 两个 `crons` 的 UTC 时间（主触发） |
+| `.github/workflows/daily.yml` | 兜底 `cron:`（目标 + 2 分钟）与 `--earliest` |
+| `.github/workflows/heartbeat.yml` | 兜底 `cron:` 与 `--earliest 09:30` |
+| `config.yaml` | `push_time`（只影响手动运行，建议与目标时间一致） |
 
-换算：**北京时间 − 8 小时 = cron 的 UTC 时间**。想让邮件更早/更晚，先改
-`--earliest`，再确认 cron 窗口还能覆盖当前延迟（窗口 = 目标时间往前推 0~7.3h）。
-运行命令必须带 `--now`，否则窗口会锚定到 `push_time`，提前跑会退回到前一天。
-要**严格准时**（不依赖 GitHub 的队列），只能改用外部定时器在 08:20 调用
-`workflow_dispatch` API（需要 fine-grained PAT，权限 `Actions: write`）。
+换算：**北京时间 − 8 小时 = UTC**。先改 Worker 的 cron 并 `wrangler deploy`，
+再改仓库里的兜底档和闸门。运行命令必须带 `--now`，否则窗口会锚定到
+`push_time`，提前跑会退回到前一天。
 
 ---
 
@@ -262,8 +296,12 @@ on:
 ### 查看运行情况
 
 ```
-https://github.com/LongjiangLi/ai-daily/actions
+GitHub Actions：https://github.com/LongjiangLi/ai-daily/actions
+Cloudflare：    Workers & Pages → ai-daily-trigger → Logs
 ```
+
+正常的定时 run 在 Actions 里 `event` 显示 `workflow_dispatch`（由 Worker 触发），
+每天 08:27 左右一条；兜底 cron 的 run 会显示 `schedule`，通常读到「今天已发」后秒退。
 
 ### 手动触发
 
@@ -275,7 +313,11 @@ https://github.com/LongjiangLi/ai-daily/actions
 
 ### 暂停 / 恢复
 
-`Actions` → `daily-digest` → 右上 `⋯` → `Disable workflow` / `Enable workflow`
+- 暂停发信：`Actions` → `daily-digest` → 右上 `⋯` → `Disable workflow`（会同时停掉
+  Worker 的 dispatch 和兜底 cron，dispatch 会报 workflow disabled）
+- 只停主触发：Cloudflare 控制台 → `ai-daily-trigger` → Settings → Trigger Events
+  删掉 / 恢复 cron（或 `wrangler deploy` 后改 `wrangler.toml`）
+- 恢复：`Enable workflow`；Workflow 被禁用超过 60 天会需要重新启用
 
 ### 正常运行的日志特征
 
@@ -346,7 +388,8 @@ Actions → 点进失败的 run → 左侧 job "run"
 | `[rss] 拉取失败 <url>` | 该 RSS 地址失效 | 改 `config.yaml` 的 feeds |
 | `无法解析 JSON` | 输出被 max_tokens 截断 | 已内置自动重试 + 修复；仍频繁则调大 `llm.max_tokens` |
 | `[github] 403 rate limit` | 未认证限 10 次/分 | 本地设 `GITHUB_TOKEN`；Actions 已自动注入 |
-| 到了 09:20 仍没收到邮件，Actions 里**连 scheduled run 都没有** | GitHub 的 cron 被延迟或静默丢弃（best-effort；2026-11 实测延迟 6~7 小时） | 这是平台行为，不是配置错误；等后面的档位或手动 `Run workflow`。09:24-10:10 心跳会发告警 |
+| 08:35 后仍没收到邮件，Actions 里**没有 `workflow_dispatch` 的 run** | Cloudflare Worker 没触发 / 没部署成功 / PAT 失效（Worker 日志 401） | `wrangler tail` 或控制台看 Logs；重新 `wrangler secret put GITHUB_TOKEN`。兜底 cron 下午会补发，09:33 心跳会告警 |
+| 到了 09:33 仍没收到邮件，Actions 里**连 scheduled run 都没有** | GitHub 的兜底 cron 被延迟或静默丢弃（best-effort；2026-11 实测延迟 5~7 小时） | 兜底档本来就可能迟到；主触发应看 Worker。Worker 也异常时手动 `Run workflow`，09:33 心跳会发告警 |
 | 日志出现 `…已发送过…跳过` | 当天已经发过，兜底/手动触发了第二次 | 正常现象；确需重发时勾选 `force` |
 
 ### 8.3 无害的提示（不用处理）
@@ -372,7 +415,8 @@ Actions → 点进失败的 run → 左侧 job "run"
 | 7 | PyCharm 显示 Python 3.13 | SDK 条目缓存了旧名字 | 删除后重新添加 `.venv` 解释器 |
 | 8 | Actions 报 `缺少 LLM_API_KEY` | Secret 未配置 | 在仓库 Secrets 中添加 |
 | 9 | 推送上去了但 Actions 用旧版 | 本地提交未 push | `git status -sb` 确认 `ahead N` 后推送 |
-| 10 | 配好定时任务后第二天没收到邮件，Actions 里没有 scheduled run | GitHub 的 `schedule` 是 best-effort；任务被延迟或**静默丢弃**（无失败记录） | 已用「北京 01:20-08:20 每小时一档 + `--earliest 08:20` 闸门 + `last_sent_date` 去重 + 09:30 后心跳告警」补偿；严格准时需外部定时器调 `workflow_dispatch` |
+| 10 | 配好定时任务后第二天没收到邮件，Actions 里没有 scheduled run | GitHub 的 `schedule` 是 best-effort；任务被延迟或**静默丢弃**（无失败记录） | 改为 Cloudflare Worker 在北京 08:27 调 `workflow_dispatch`（主触发）+ GitHub cron 兜底 + `last_sent_date` 去重 + 09:33 心跳告警；见第 6 节 |
+| 11 | 2026-11-13：06:44 触发了一次但没收到邮件 | 01:20 档延迟 5h24 提前落地，被 `--earliest 08:20` 闸门拦下；其余 7 档没有被 GitHub 调度出来（静默丢弃） | 同上：准时不依赖 GitHub cron，改由 Cloudflare Worker 的 08:27 dispatch 保证 |
 
 ---
 

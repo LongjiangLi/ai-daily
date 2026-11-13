@@ -1,25 +1,29 @@
 name: daily-digest
 
-# 注意：GitHub 的 schedule 只在「public 仓库」上稳定注册和触发。
-# 本仓库 2026-11-11 之前是 private（个人免费账号），schedule 从未产生过
-# 任何运行记录（event=schedule 长期为 0），只有 workflow_dispatch 能用。
-# 因此仓库已转为 public；若以后改回 private，定时任务会再次失效。
+# 触发方式（2026-11-13 起）：
 #
-# 触发延迟（2026-11 实测）：cron 到实际运行稳定晚 6h20m ~ 7h03m，且每天都在变。
-# 所以 cron 不再是「08:17 的闹钟」，而是「提前量」：
-#   1. 在北京 01:20-08:20 每小时排一档（共 8 档/天），按实测延迟，
-#      实际落地在 08:20-09:20；哪一档落到 08:20 之后，就由哪一档发信；
-#   2. main.py 的 --earliest 08:20 兜住「延迟突然消失」：到得太早直接退出，
-#      不会凌晨发信，把机会留给后面的档位；
-#   3. state.json 的 last_sent_date 保证同一天只发一封。
+#   主触发：Cloudflare Worker 的 Cron Trigger（北京 08:27，刻意错开 :00/:30）
+#   调用本 workflow 的 workflow_dispatch，见 cloudflare/README.md。dispatch 不
+#   经过 GitHub 的定时队列，实测秒级启动，邮件约 08:30-08:33 到达。
+#
+#   兜底：本文件只保留 1 档 GitHub schedule（北京 08:36，同样错开 :00/:30）。
+#   GitHub 的 schedule 是 best-effort（2026-11 实测延迟 5h24-7h03，且高负载时
+#   会静默丢弃），所以这档在 Worker 正常时只会读到「今天已发」然后秒退；只有
+#   Worker 失效时它才真正发信（通常已是下午）。main.py --earliest 08:30 保证它
+#   不会在凌晨误发；state.json 的 last_sent_date 保证同一天只发一封。
+#
+#   手动：Actions 页面 Run workflow（勾 force 可忽略当天已发记录强制重发）。
+#
+# 注意：GitHub 的 schedule 只在 public 仓库上稳定注册和触发。本仓库 2026-11-11
+# 之前是 private，event=schedule 长期为 0；若以后改回 private，兜底档会失效，
+# 但 Worker 的 dispatch 不受影响。
 
 on:
   schedule:
-    # 北京 01:20-07:20 每小时一档。错开整点（:20）是为了让实测的
-    # 6h19-7h03 延迟尽量贴近 08:30：7h03 → 08:23，6h19 → 08:39。
-    - cron: '20 17-23 * * *'
-    # 北京 08:20：延迟为 0 或很小时走这一档。
-    - cron: '20 0 * * *'
+    # 北京 08:36（UTC 00:36）：Worker 触发后约 9 分钟，正常情况下只会读到
+    # last_sent_date=今天 然后秒退；Worker 没触发时才由这一档兜底。
+    # 分钟避开 :00 / :30，减少调度高峰的竞争。
+    - cron: '36 0 * * *'
   workflow_dispatch:
     inputs:
       force:
@@ -42,9 +46,9 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # 多个档位可能同时落到 08:20 之后。run 的 SHA 是入队时解析的，可能落后于
-      # 前一个 run 刚提交的 state.json；先同步到最新 main，确保 last_sent_date
-      # 检查看到的是最新状态，避免并发重复发信。
+      # Worker 的 dispatch 和兜底 cron 可能先后触发。run 的 SHA 是入队时解析的，
+      # 可能落后于前一个 run 刚提交的 state.json；先同步到最新 main，确保
+      # last_sent_date 检查看到的是最新状态，避免重复发信。
       - name: Sync with latest main
         if: github.ref == 'refs/heads/main'
         run: |
@@ -97,9 +101,10 @@ jobs:
         run: |
           ARGS="--now"
           if [ "${{ github.event_name }}" = "schedule" ]; then
-            # 兜底闸门：早于北京时间 08:20 不发，等后面的 cron 档位。
-            # 手动 Run workflow 不受限制（想提前发时直接触发即可）。
-            ARGS="$ARGS --earliest 08:20"
+            # 兜底闸门：早于北京时间 08:30 不发。正常这档在 08:36 之后才跑；
+            # 万一 cron 被改早，也不会在凌晨误发。
+            # 手动 Run workflow 和 Worker 的 dispatch 都不受限制。
+            ARGS="$ARGS --earliest 08:30"
           fi
           if [ "${{ inputs.force }}" = "true" ]; then
             ARGS="$ARGS --force"

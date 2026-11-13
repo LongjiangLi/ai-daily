@@ -1,4 +1,6 @@
 .env
+.dev.vars
+.wrangler/
 __pycache__/
 *.py[cod]
 .venv/

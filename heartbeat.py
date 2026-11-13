@@ -1,11 +1,13 @@
 """发送心跳告警：到点检查今天是否已经发出过日报。
 
-由 .github/workflows/heartbeat.yml 在 UTC 19:05（北京 03:05）排队调用。
-按 2026-11 实测的 6h20m ~ 7h03m 调度延迟，实际大约在 09:24-10:10 运行；
-早于 --earliest（09:30）时直接退出，避免延迟消失或日报还没到时发假告警。
+主触发：Cloudflare Worker 的 Cron Trigger 在北京 09:33 调用 workflow_dispatch
+（见 cloudflare/README.md），check 时机准确。
+兜底：.github/workflows/heartbeat.yml 仍保留 1 档 GitHub schedule（UTC 19:23，
+北京 03:23 排队）。按 2026-11 实测的 5h-7h 调度延迟约 08:23-10:23 运行；早于
+--earliest（09:30）时直接退出，所以延迟短的日子这档不检查，属正常现象。
 
 GitHub 的 schedule 是 best-effort，任务可能延迟数小时甚至被静默丢弃，
-被丢弃时 Actions 里不会留下任何失败记录，所以只能靠外部时间点兜底检查。
+被丢弃时 Actions 里不会留下任何失败记录，所以主触发改由外部定时器保证。
 
 判定依据是 state.json 里的 last_sent_date（main.py 发信成功后写入）。
 为避免和仍在延迟中的主/兜底任务抢跑，默认最多轮询 10 分钟：
